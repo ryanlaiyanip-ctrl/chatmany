@@ -4,7 +4,7 @@
 import { InstagramApiError } from "../../src/api/client";
 import type { InstagramClient } from "../../src/api/client";
 
-type Method = "privateReply" | "reply" | "like" | "quick" | "text" | "followers";
+type Method = "privateReply" | "reply" | "like" | "quick" | "button" | "text";
 
 export class FakeClient {
   calls: Record<Method, unknown[]> = {
@@ -12,8 +12,8 @@ export class FakeClient {
     reply: [],
     like: [],
     quick: [],
+    button: [],
     text: [],
-    followers: [],
   };
   /** How many upcoming calls of each method should throw a (non-rate-limit) error. */
   failNext: Partial<Record<Method, number>> = {};
@@ -24,7 +24,6 @@ export class FakeClient {
    * the recipient actually received. This is the case that produces real duplicate DMs.
    */
   deliverThenFailNext: Partial<Record<Method, number>> = {};
-  followers = 100;
 
   private guard(m: Method): void {
     const n = this.failNext[m] ?? 0;
@@ -69,17 +68,19 @@ export class FakeClient {
     this.guardAfter("quick");
     return { message_id: "m" };
   }
+  /** Button-template send to an IGSID — how the follow gate goes out (see transitions.ts). */
+  async sendButtonTemplate(recipient: { igsid?: string; commentId?: string }, text: string, buttons: unknown) {
+    this.guard("button");
+    this.calls.button.push({ igsid: recipient.igsid, text, buttons });
+    this.guardAfter("button");
+    return { message_id: "m" };
+  }
   async sendText(igsid: string, text: string) {
     this.guard("text");
     this.calls.text.push({ igsid, text });
     this.guardAfter("text");
     return { message_id: "m" };
   }
-  async getFollowersCount() {
-    this.calls.followers.push({});
-    return this.followers;
-  }
-
   asClient(): InstagramClient {
     return this as unknown as InstagramClient;
   }
