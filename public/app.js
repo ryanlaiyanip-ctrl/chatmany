@@ -192,7 +192,10 @@ function connectBanner() {
   const s = store.status || {};
   if (s.connected && !s.token_expired) return "";
   const msg = s.connected && s.token_expired ? "Your Instagram token expired — reconnect to resume." : "No Instagram account connected yet.";
-  return `<div class="banner">${msg} <a href="/auth/authorize">Connect Instagram</a></div>`;
+  // /auth/authorize is owner-gated. A link navigation cannot send an Authorization header, so the
+  // token goes in the query; the redirect it returns sets Referrer-Policy: no-referrer.
+  const authorizeUrl = `/auth/authorize?token=${encodeURIComponent(store.token)}`;
+  return `<div class="banner">${msg} <a href="${authorizeUrl}">Connect Instagram</a></div>`;
 }
 
 function route() {

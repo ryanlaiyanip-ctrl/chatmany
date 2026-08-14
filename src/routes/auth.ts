@@ -57,10 +57,25 @@ export async function handleCallback(env: Env, url: URL): Promise<Response> {
       );
     }
 
+    // Takeover guard. /auth/callback is necessarily public (Instagram calls it), and auth is a
+    // single global row, so without this check anyone who completes the flow would silently
+    // replace the owner's stored token with their own account. Connecting a different account
+    // requires an explicit Disconnect from the dashboard first.
+    const incomingUserId = me.user_id ?? short.userId;
+    const existing = await getAuth(env.DB);
+    if (existing && existing.ig_user_id && existing.ig_user_id !== incomingUserId) {
+      return html(
+        `<h1>Already connected</h1>
+         <p>This chatmany instance is already connected to <b>@${escapeHtml(existing.username ?? existing.ig_user_id)}</b>.</p>
+         <p>To connect a different account, open your dashboard and click <b>Disconnect</b> first.</p>`,
+        409,
+      );
+    }
+
     await saveAuth(env.DB, {
       access_token: long.accessToken,
       expires_at: now() + long.expiresIn,
-      ig_user_id: me.user_id ?? short.userId,
+      ig_user_id: incomingUserId,
       username: me.username ?? null,
       account_type: me.account_type ?? null,
       profile_picture_url: me.profile_picture_url ?? null,

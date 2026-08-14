@@ -17,7 +17,10 @@ export function html(body: string, status = 200): Response {
 }
 
 export function redirect(location: string, status = 302): Response {
-  return new Response(null, { status, headers: { location } });
+  // no-referrer: /auth/authorize is reached with `?token=<OWNER_TOKEN>` in the query (a plain
+  // link navigation cannot set an Authorization header), so make sure that URL is never handed
+  // to instagram.com in a Referer header.
+  return new Response(null, { status, headers: { location, "referrer-policy": "no-referrer" } });
 }
 
 /**

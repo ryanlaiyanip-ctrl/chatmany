@@ -26,8 +26,9 @@ export default {
     // --- public routes ---
     if (pathname === "/health") return json({ ok: true, mode: env.MODE });
 
-    // OAuth onboarding.
-    if (pathname === "/auth/authorize" && method === "GET") return handleAuthorize(env);
+    // OAuth onboarding. /auth/callback must stay public — Instagram itself calls it, with no
+    // owner token — so the takeover guard lives in handleCallback (it refuses to overwrite an
+    // existing connection with a different account). /auth/authorize is owner-only, below.
     if (pathname === "/auth/callback" && method === "GET") return handleCallback(env, url);
 
     // Webhook (only meaningful when MODE=webhook; verification is always safe to answer).
@@ -40,6 +41,7 @@ export default {
       return handleApi(env, req, url);
     }
     const ownerRoutes = new Set([
+      "/auth/authorize",
       "/auth/status",
       "/auth/disconnect",
       "/config/import",
@@ -48,6 +50,7 @@ export default {
     ]);
     if (ownerRoutes.has(pathname)) {
       if (!isOwner(req, url, env)) return json({ error: "unauthorized" }, 401);
+      if (pathname === "/auth/authorize" && method === "GET") return handleAuthorize(env);
       if (pathname === "/auth/status" && method === "GET") return handleStatus(env);
       if (pathname === "/auth/disconnect" && method === "POST") return handleDisconnect(env);
       if (pathname === "/config/import" && method === "POST") return handleConfigImport(env, req);
