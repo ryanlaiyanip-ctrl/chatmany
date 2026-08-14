@@ -16,6 +16,19 @@ export function afterTap(campaign: Campaign): State {
   return "DELIVER";
 }
 
+/**
+ * How many times we will re-ask for an email before going quiet.
+ *
+ * The ask is sent once on entering AWAITING_EMAIL; this bounds the follow-ups after that, so the
+ * worst case is three DMs about email rather than one per reply forever. Reaching the cap does not
+ * close the conversation — a real address arriving later is still captured and still delivers.
+ */
+const MAX_EMAIL_REASKS = 2;
+
+export function emailReasksExhausted(retries: number): boolean {
+  return retries >= MAX_EMAIL_REASKS;
+}
+
 /** After a confirmed follow, where next? */
 export function afterFollow(campaign: Campaign): State {
   if (campaign.ask_email) return "AWAITING_EMAIL";

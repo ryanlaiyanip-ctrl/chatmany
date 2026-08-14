@@ -20,6 +20,7 @@ import {
   afterFollow,
   afterTap,
   confirmsFollow,
+  emailReasksExhausted,
   parsePayload,
   taggedPayload,
 } from "./transitions";
@@ -169,7 +170,7 @@ export class Engine {
           await this.onFollow(campaign, evt);
           break;
         case "AWAITING_EMAIL":
-          await this.onEmail(campaign, evt);
+          await this.onEmail(campaign, evt, convo.email_retries);
           break;
         default:
           break; // NEW / DELIVER / DONE — nothing to do
@@ -193,18 +194,33 @@ export class Engine {
     });
   }
 
-  private async onEmail(campaign: Campaign, evt: NormalizedMessage): Promise<void> {
+  private async onEmail(campaign: Campaign, evt: NormalizedMessage, reasks: number): Promise<void> {
     const email = evt.email ?? extractEmail(evt.text);
     if (!email) {
       // Not a valid email (no @ / not chip-provided) — re-ask instead of silently ignoring it,
       // so the person gets a nudge rather than the bot going quiet. Resource is never sent from here.
-      await this.resendEmailAsk(campaign, evt.igsid);
+      await this.resendEmailAsk(campaign, evt.igsid, reasks);
       return;
     }
     await this.enterState(campaign, evt.igsid, "DELIVER", { entryEvent: "email_captured", patch: { email } });
   }
 
-  private async resendEmailAsk(campaign: Campaign, igsid: string): Promise<void> {
+  /**
+   * Nudge someone who replied with something that isn't an email — but only a couple of times.
+   *
+   * Uncapped, this re-asked on every non-email reply, so somebody who simply kept talking got one
+   * more DM per message; a photo, sticker or voice note counts too, since those arrive with no text
+   * at all. Repeatedly DMing a person who is not engaging is what platform spam detection watches
+   * for, so the risk lands on the sending account, not just the reader's patience.
+   *
+   * Hitting the cap only stops the nudging. The conversation stays in AWAITING_EMAIL, so an address
+   * sent later is still captured and still delivers the reward.
+   */
+  private async resendEmailAsk(campaign: Campaign, igsid: string, reasks: number): Promise<void> {
+    if (emailReasksExhausted(reasks)) {
+      console.warn(`[chatmany] email re-ask cap reached for ${igsid} on ${campaign.campaign_id}; staying quiet.`);
+      return;
+    }
     const ok = await this.trySend(
       () =>
         this.client.sendQuickReplies(
@@ -218,7 +234,10 @@ export class Engine {
     // fail-clean pattern as every other send: a failed resend leaves updated_at untouched so the
     // same message retries cleanly on the next poll instead of being silently dropped.
     if (ok) {
-      await updateConversation(this.db, igsid, campaign.campaign_id, { state: "AWAITING_EMAIL" });
+      await updateConversation(this.db, igsid, campaign.campaign_id, {
+        state: "AWAITING_EMAIL",
+        email_retries: reasks + 1,
+      });
     }
   }
 

@@ -196,7 +196,10 @@ export interface ConversationRow {
   username: string | null;
   email: string | null;
   followed: number;
+  /** @deprecated Counter for the removed verify_follow_count mode; nothing writes it. */
   follow_retries: number;
+  /** How many times we have re-asked for their email. Capped — see engine.resendEmailAsk. */
+  email_retries: number;
   updated_at: number;
   created_at: number;
 }
@@ -235,8 +238,8 @@ export async function createConversation(
   await db
     .prepare(
       `INSERT OR IGNORE INTO conversations
-         (igsid, campaign_id, state, username, followed, follow_retries, updated_at, created_at)
-       VALUES (?, ?, ?, ?, 0, 0, ?, ?)`,
+         (igsid, campaign_id, state, username, followed, follow_retries, email_retries, updated_at, created_at)
+       VALUES (?, ?, ?, ?, 0, 0, 0, ?, ?)`,
     )
     .bind(igsid, campaignId, state, username, ts, ts)
     .run();
@@ -246,7 +249,7 @@ export async function updateConversation(
   db: D1Database,
   igsid: string,
   campaignId: string,
-  patch: Partial<Pick<ConversationRow, "state" | "email" | "followed" | "follow_retries">>,
+  patch: Partial<Pick<ConversationRow, "state" | "email" | "followed" | "email_retries">>,
 ): Promise<void> {
   const sets: string[] = [];
   const binds: unknown[] = [];
@@ -262,9 +265,9 @@ export async function updateConversation(
     sets.push("followed = ?");
     binds.push(patch.followed);
   }
-  if (patch.follow_retries !== undefined) {
-    sets.push("follow_retries = ?");
-    binds.push(patch.follow_retries);
+  if (patch.email_retries !== undefined) {
+    sets.push("email_retries = ?");
+    binds.push(patch.email_retries);
   }
   if (sets.length === 0) return;
   sets.push("updated_at = ?");

@@ -4,6 +4,7 @@ import {
   afterFollow,
   afterTap,
   confirmsFollow,
+  emailReasksExhausted,
   parsePayload,
   taggedPayload,
 } from "../src/engine/transitions";
@@ -38,6 +39,15 @@ describe("afterFollow", () => {
   });
   it("goes to DELIVER otherwise", () => {
     expect(afterFollow(campaign({}))).toBe("DELIVER");
+  });
+});
+
+describe("email re-ask cap", () => {
+  it("allows two nudges, then stops", () => {
+    expect(emailReasksExhausted(0)).toBe(false);
+    expect(emailReasksExhausted(1)).toBe(false);
+    expect(emailReasksExhausted(2)).toBe(true);
+    expect(emailReasksExhausted(99)).toBe(true);
   });
 });
 

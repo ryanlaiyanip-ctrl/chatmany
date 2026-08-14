@@ -122,7 +122,7 @@ describe("hostile campaign ids (config import accepts any string)", () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 describe("abusive message streams", () => {
-  it("DEFECT: every non-email reply triggers another email-ask DM, uncapped", async () => {
+  it("someone who keeps talking is nudged twice, then left alone", async () => {
     await upsertCampaign(db, campaign({ ask_email: true }), true);
     await engine.handleComment(comment());
     await engine.handleMessage(message({ timestamp: T + 10 })); // → AWAITING_EMAIL, 1 ask
@@ -130,19 +130,45 @@ describe("abusive message streams", () => {
     for (let i = 0; i < 8; i++) {
       await engine.handleMessage(message({ text: `nope ${i}`, timestamp: T + 20 + i }));
     }
-    // 1 initial ask + 8 re-asks = 9 DMs, from someone who simply kept talking.
-    expect(client.calls.quick).toHaveLength(9);
-    // The follow gate has no equivalent loop; the email step is the only uncapped one.
+    // 1 initial ask + at most 2 re-asks. Previously this was 9 DMs, one per reply, unbounded.
+    expect(client.calls.quick).toHaveLength(3);
+    expect((await getConversation(db, "u1", "c1"))?.state).toBe("AWAITING_EMAIL");
   });
 
-  it("an attachment-only message (no text at all) also triggers a re-ask", async () => {
+  it("going quiet does not close the door — a later address still delivers", async () => {
     await upsertCampaign(db, campaign({ ask_email: true }), true);
     await engine.handleComment(comment());
     await engine.handleMessage(message({ timestamp: T + 10 }));
-    const before = client.calls.quick.length;
-    // A photo/sticker/voice note arrives with no `text` field.
-    await engine.handleMessage(message({ timestamp: T + 20 }));
-    expect(client.calls.quick.length).toBe(before + 1);
+    for (let i = 0; i < 6; i++) await engine.handleMessage(message({ text: "huh", timestamp: T + 20 + i }));
+    expect(client.calls.quick).toHaveLength(3); // capped
+
+    await engine.handleMessage(message({ text: "fine, me@example.com", timestamp: T + 90 }));
+    const convo = await getConversation(db, "u1", "c1");
+    expect(convo?.state).toBe("DONE");
+    expect(convo?.email).toBe("me@example.com");
+    expect(client.calls.text).toHaveLength(1);
+  });
+
+  it("attachment-only messages count against the cap too", async () => {
+    await upsertCampaign(db, campaign({ ask_email: true }), true);
+    await engine.handleComment(comment());
+    await engine.handleMessage(message({ timestamp: T + 10 }));
+    // Photos, stickers and voice notes arrive with no `text` field at all.
+    for (let i = 0; i < 5; i++) await engine.handleMessage(message({ timestamp: T + 20 + i }));
+    expect(client.calls.quick).toHaveLength(3);
+  });
+
+  it("a failed re-ask is not counted, so the nudge is not silently spent", async () => {
+    await upsertCampaign(db, campaign({ ask_email: true }), true);
+    await engine.handleComment(comment());
+    await engine.handleMessage(message({ timestamp: T + 10 }));
+
+    client.failNext.quick = 1; // Instagram rejects the first re-ask: nothing was delivered
+    await engine.handleMessage(message({ text: "what", timestamp: T + 20 }));
+    expect((await getConversation(db, "u1", "c1"))?.email_retries).toBe(0);
+
+    await engine.handleMessage(message({ text: "what", timestamp: T + 30 }));
+    expect((await getConversation(db, "u1", "c1"))?.email_retries).toBe(1);
   });
 
   it("a flood of messages after DONE sends nothing", async () => {
