@@ -5,6 +5,11 @@
 
 const GRAPH_HOST = "https://graph.instagram.com";
 
+/** Webhook fields chatmany consumes. `comments` drives the funnel entry; `messages` carries taps,
+ *  postback payloads, and typed replies. Both are needed — subscribing to only one silently breaks
+ *  half the funnel. */
+export const WEBHOOK_FIELDS = "comments,messages";
+
 /** Meta error codes that indicate rate limiting / throttling (Section 10). */
 const RATE_LIMIT_CODES = new Set([4, 17, 32, 613, 80007]);
 
@@ -102,6 +107,18 @@ export class InstagramClient {
     return this.parse<T>(res);
   }
 
+  /**
+   * POST with parameters in the query string and no body. Graph's edge-management endpoints
+   * (e.g. /subscribed_apps) take their arguments this way rather than as a JSON document.
+   */
+  private async postParams<T>(path: string, params: Record<string, string> = {}): Promise<T> {
+    const url = new URL(this.base(path));
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+    url.searchParams.set("access_token", this.accessToken);
+    const res = await fetch(url.toString(), { method: "POST" });
+    return this.parse<T>(res);
+  }
+
   /** POST JSON body; access_token as a query param (Graph convention). */
   private async post<T>(path: string, body: Record<string, unknown>): Promise<T> {
     const url = new URL(this.base(path));
@@ -193,6 +210,28 @@ export class InstagramClient {
   /** Post a public reply under a comment (text only; publishes asynchronously). */
   replyToComment(commentId: string, message: string): Promise<{ id?: string }> {
     return this.post(`/${commentId}/replies`, { message });
+  }
+
+  // ---- webhook subscription ----
+
+  /**
+   * Subscribe the connected account to this app's webhooks (MODE=webhook only).
+   *
+   * Configuring the callback URL in the Meta dashboard subscribes the *app*; this subscribes the
+   * *account*, and both are required before any event is delivered. Missing this is the classic
+   * "my webhook verified fine but nothing ever arrives" failure — the handshake succeeds because
+   * verification only proves the URL answers, not that anything is wired to it.
+   */
+  subscribeToWebhooks(fields = WEBHOOK_FIELDS): Promise<{ success?: boolean }> {
+    return this.postParams(`/${this.igUserId}/subscribed_apps`, { subscribed_fields: fields });
+  }
+
+  /** Current webhook field subscriptions for the connected account (diagnostics). */
+  async getWebhookSubscriptions(): Promise<Array<{ subscribed_fields?: string[] }>> {
+    const res = await this.get<{ data?: Array<{ subscribed_fields?: string[] }> }>(
+      `/${this.igUserId}/subscribed_apps`,
+    );
+    return res.data ?? [];
   }
 
   // NOTE: there is deliberately no likeComment() here. Instagram's API cannot like a comment.

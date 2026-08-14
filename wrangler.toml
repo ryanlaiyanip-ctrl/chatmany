@@ -29,11 +29,24 @@ binding = "ASSETS"
 [vars]
 # Public, non-secret configuration. Secrets (APP_SECRET, OWNER_TOKEN) go via `wrangler secret put`.
 GRAPH_VERSION = "v23.0"
-# "polling" (default, build target) or "webhook" (optional latency upgrade, Section 5B).
-MODE = "polling"
-# Seconds between comment/message polls. Cron granularity is 60s; larger values are honored
-# via a last-run timestamp so we never over-poll and burn the shared rate budget.
+# "webhook" (push, near-instant) or "polling" (pull, zero extra Meta setup).
+#
+# Webhook mode needs three things beyond this line, or events silently never arrive:
+#   1. WEBHOOK_VERIFY_TOKEN set as a secret (`wrangler secret put WEBHOOK_VERIFY_TOKEN`)
+#   2. the callback URL https://<your-worker>/webhook registered in the Meta app dashboard,
+#      subscribed to the `comments` and `messages` fields
+#   3. the ACCOUNT subscribed to the app — chatmany does this for you when you connect
+#      Instagram; check it any time with `GET /admin/webhook`
+# Switch back to "polling" at any time; nothing else needs to change.
+MODE = "webhook"
+# Seconds between comment/message polls in polling mode. Cron granularity is 60s; larger values
+# are honored via a last-run timestamp so we never over-poll and burn the shared rate budget.
 POLL_INTERVAL_SECONDS = "90"
+# Webhook mode only: how often to run a slow reconciliation poll that catches anything a webhook
+# delivery missed (Meta gives up after a few retries; a redeploy or a blip loses those leads with
+# nothing to notice it). Safe to run alongside push — the engine's idempotency ledgers mean an
+# already-handled comment is recognised and skipped, never re-sent. Set to "off" for pure push.
+WEBHOOK_RECONCILE_SECONDS = "900"
 # Redirect URI registered in your Meta app. Must match exactly: https://<your-worker>/auth/callback
 # You MUST change this before deploying — the placeholder is not a working URL.
 REDIRECT_URI = "https://REPLACE-WITH-YOUR-WORKER-URL.workers.dev/auth/callback"

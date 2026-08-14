@@ -2,7 +2,7 @@
 // code exchange → long-lived token stored in auth. Plus connection status + disconnect.
 
 import { buildAuthorizeUrl, exchangeCodeForShortLivedToken, exchangeForLongLivedToken } from "../auth/oauth";
-import { InstagramClient } from "../api/client";
+import { InstagramClient, WEBHOOK_FIELDS } from "../api/client";
 import { clearAuth, getAuth, kvGet, kvSet, now, saveAuth } from "../db";
 import type { Env } from "../types";
 import { json, redirect, html } from "./http";
@@ -81,10 +81,30 @@ export async function handleCallback(env: Env, url: URL): Promise<Response> {
       profile_picture_url: me.profile_picture_url ?? null,
     });
 
+    // In webhook mode the account must be subscribed to the app's webhooks, on top of the callback
+    // URL configured in the Meta dashboard. Do it here so connecting is the only step: forgetting
+    // it produces a verified-but-silent webhook, which is painful to diagnose. Non-fatal — the
+    // connection itself succeeded, and /admin/webhook can retry it.
+    let webhookNote = "";
+    if (env.MODE === "webhook") {
+      try {
+        const client2 = new InstagramClient(long.accessToken, env.GRAPH_VERSION, incomingUserId);
+        await client2.subscribeToWebhooks();
+        webhookNote = `<p>Webhook subscription active for <code>${escapeHtml(WEBHOOK_FIELDS)}</code>.</p>`;
+      } catch (e) {
+        const detail = escapeHtml(e instanceof Error ? e.message : String(e));
+        console.warn(`[chatmany] webhook subscribe failed: ${detail}`);
+        webhookNote =
+          `<p>⚠️ Connected, but subscribing this account to webhooks failed:</p><pre>${detail}</pre>` +
+          `<p>Retry from your dashboard, or POST to <code>/admin/webhook</code> with your owner token.</p>`;
+      }
+    }
+
     return html(
       `<h1>Connected ✅</h1>
        <p>@${escapeHtml(me.username ?? "your account")} is now connected to chatmany.</p>
-       <p>Token valid ~60 days; it auto-refreshes. You can close this tab.</p>`,
+       <p>Token valid ~60 days; it auto-refreshes. You can close this tab.</p>
+       ${webhookNote}`,
     );
   } catch (e) {
     return html(`<h1>Connection failed</h1><pre>${escapeHtml(e instanceof Error ? e.message : String(e))}</pre>`, 500);
