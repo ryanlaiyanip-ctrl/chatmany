@@ -14,7 +14,7 @@ import type {
 } from "../types";
 import { InstagramApiError } from "../api/client";
 import { commentTriggers, extractEmail } from "./match";
-import { afterFollow, afterTap, expectedTitleForState, followRetriesExhausted, titleMatches } from "./transitions";
+import { FOLLOW_PAYLOAD, OPENING_PAYLOAD, afterFollow, afterTap, confirmsFollow } from "./transitions";
 import {
   claimCommentAction,
   claimSend,
@@ -24,8 +24,6 @@ import {
   getConversation,
   getOpenConversations,
   isCommentProcessed,
-  kvGet,
-  kvSet,
   logEvent,
   markCommentProcessed,
   releaseSend,
@@ -33,8 +31,13 @@ import {
 } from "../db";
 import type { ConversationRow } from "../db";
 
-const OPENING_PAYLOAD = "OPENING_TAP";
-const FOLLOW_PAYLOAD = "FOLLOW_CONFIRM";
+// The gate is a nudge, not a check — nothing verifies the follow (no Instagram API can). The copy
+// carries all of the persuasion, which is why the button stays worded as an attestation: tapping
+// something that says "I followed" prompts people to actually go and follow first. A neutral label
+// like "Send me the resource" delivers exactly the same reward while asking nothing of them.
+const DEFAULT_FOLLOW_GATE =
+  "Make sure you're following so you don't miss the next one 🙌 Not following yet? Follow, then tap below.";
+const DEFAULT_FOLLOW_BUTTON = "✅ I followed";
 
 /** Deterministic rotation through public-reply variants so it looks human. */
 function pickRotating(texts: string[], seed: string): string {
@@ -146,7 +149,7 @@ export class Engine {
           await this.onTap(campaign, evt);
           break;
         case "AWAITING_FOLLOW":
-          await this.onFollow(campaign, evt, convo.follow_retries);
+          await this.onFollow(campaign, evt);
           break;
         case "AWAITING_EMAIL":
           await this.onEmail(campaign, evt);
@@ -164,20 +167,8 @@ export class Engine {
     await this.enterState(campaign, evt.igsid, afterTap(campaign), { entryEvent: "button_clicked" });
   }
 
-  private async onFollow(campaign: Campaign, evt: NormalizedMessage, retries: number): Promise<void> {
-    const expected = expectedTitleForState("AWAITING_FOLLOW", campaign) ?? "";
-    const isConfirm = evt.payload === FOLLOW_PAYLOAD || titleMatches(evt.text, expected);
-    if (!isConfirm) return; // unrelated message; stay in AWAITING_FOLLOW
-
-    // verify_follow_count: weak heuristic (documented unreliable). Compare follower total against
-    // the baseline captured when the gate was sent; if it didn't grow, re-send and stay (capped).
-    if (campaign.verify_follow_count && !followRetriesExhausted(retries)) {
-      const looksFollowed = await this.followerCountGrew(campaign, evt.igsid);
-      if (!looksFollowed) {
-        await this.resendFollowGate(campaign, evt.igsid, retries);
-        return;
-      }
-    }
+  private async onFollow(campaign: Campaign, evt: NormalizedMessage): Promise<void> {
+    if (!confirmsFollow(evt)) return; // a different button's postback; stay in AWAITING_FOLLOW
 
     await this.enterState(campaign, evt.igsid, afterFollow(campaign), {
       entryEvent: "follow_confirmed",
@@ -234,16 +225,8 @@ export class Engine {
 
     switch (target) {
       case "AWAITING_FOLLOW": {
-        const ok = await this.trySend(
-          () =>
-            this.client.sendQuickReplies(igsid, campaign.copy.follow_gate ?? "Follow us first 🙌", [
-              { content_type: "text", title: campaign.copy.follow_button ?? "✅ I followed", payload: FOLLOW_PAYLOAD },
-            ]),
-          "follow_gate",
-          `follow_gate:${campaign.campaign_id}:${igsid}`,
-        );
+        const ok = await this.sendFollowGate(campaign, igsid);
         if (!ok) return;
-        if (campaign.verify_follow_count) await this.captureFollowerBaseline(campaign, igsid);
         await commit("AWAITING_FOLLOW");
         break;
       }
@@ -278,44 +261,24 @@ export class Engine {
     }
   }
 
-  private async resendFollowGate(campaign: Campaign, igsid: string, retries: number): Promise<void> {
-    const ok = await this.trySend(
+  /**
+   * Send the follow gate as a button-template message — the same shape as the opening DM, and for
+   * the same reason: it stays in the transcript. The quick-reply chips this replaced were dropped
+   * by Instagram as soon as the person typed, left, or returned to the thread, leaving them in
+   * AWAITING_FOLLOW with nothing to tap.
+   */
+  private async sendFollowGate(campaign: Campaign, igsid: string): Promise<boolean> {
+    const button = {
+      type: "postback" as const,
+      title: campaign.copy.follow_button ?? DEFAULT_FOLLOW_BUTTON,
+      payload: FOLLOW_PAYLOAD,
+    };
+    return this.trySend(
       () =>
-        this.client.sendQuickReplies(igsid, campaign.copy.follow_gate ?? "Follow us first 🙌", [
-          { content_type: "text", title: campaign.copy.follow_button ?? "✅ I followed", payload: FOLLOW_PAYLOAD },
-        ]),
-      "follow_gate_resend",
+        this.client.sendButtonTemplate({ igsid }, campaign.copy.follow_gate ?? DEFAULT_FOLLOW_GATE, [button]),
+      "follow_gate",
+      `follow_gate:${campaign.campaign_id}:${igsid}`,
     );
-    if (ok) {
-      await updateConversation(this.db, igsid, campaign.campaign_id, { follow_retries: retries + 1 });
-    }
-  }
-
-  // ---- verify_follow_count helpers (weak heuristic) ----
-
-  private baselineKey(campaign: Campaign, igsid: string): string {
-    return `follow_baseline:${campaign.campaign_id}:${igsid}`;
-  }
-
-  private async captureFollowerBaseline(campaign: Campaign, igsid: string): Promise<void> {
-    try {
-      const count = await this.client.getFollowersCount();
-      if (count !== undefined) await kvSet(this.db, this.baselineKey(campaign, igsid), String(count));
-    } catch {
-      // best-effort; absence just means we fail open on confirm
-    }
-  }
-
-  private async followerCountGrew(campaign: Campaign, igsid: string): Promise<boolean> {
-    const baselineRaw = await kvGet(this.db, this.baselineKey(campaign, igsid));
-    if (baselineRaw === null) return true; // no baseline → fail open (advance)
-    try {
-      const current = await this.client.getFollowersCount();
-      if (current === undefined) return true;
-      return current > Number(baselineRaw);
-    } catch {
-      return true;
-    }
   }
 
   // ---- send helpers ----

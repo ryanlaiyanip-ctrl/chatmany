@@ -71,6 +71,8 @@ export interface Campaign {
   /** @deprecated Instagram's API cannot like comments. Accepted for backwards compatibility; ignored. */
   like_comment?: boolean;
   check_follow?: boolean;
+  /** @deprecated No API can verify a follow; the follower-count heuristic this drove was noise.
+   *  Accepted for backwards compatibility so older saved campaigns keep loading; ignored. */
   verify_follow_count?: boolean;
   ask_email?: boolean;
   reward: RewardConfig;

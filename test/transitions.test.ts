@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  afterFollow,
-  afterTap,
-  expectedTitleForState,
-  followRetriesExhausted,
-  titleMatches,
-} from "../src/engine/transitions";
+import { FOLLOW_PAYLOAD, afterFollow, afterTap, confirmsFollow } from "../src/engine/transitions";
 import type { Campaign } from "../src/types";
 
 function campaign(overrides: Partial<Campaign>): Campaign {
@@ -40,25 +34,19 @@ describe("afterFollow", () => {
   });
 });
 
-describe("polling-mode tap resolution (expected-title map)", () => {
-  it("AWAITING_TAP expects no specific title (any message advances)", () => {
-    expect(expectedTitleForState("AWAITING_TAP", campaign({}))).toBeNull();
+describe("follow-gate confirmation", () => {
+  it("accepts our own postback payload (webhook mode)", () => {
+    expect(confirmsFollow({ payload: FOLLOW_PAYLOAD })).toBe(true);
   });
-  it("AWAITING_FOLLOW expects the follow button title", () => {
-    const c = campaign({ copy: { opening: "hi", delivery: "d", follow_button: "✅ I followed" } });
-    expect(expectedTitleForState("AWAITING_FOLLOW", c)).toBe("✅ I followed");
+  it("rejects a different button's payload so events don't cross-advance", () => {
+    expect(confirmsFollow({ payload: "SOME_OTHER_BUTTON" })).toBe(false);
   });
-  it("titleMatches is case-insensitive and whitespace-tolerant", () => {
-    expect(titleMatches("  ✅ I FOLLOWED ", "✅ I followed")).toBe(true);
-    expect(titleMatches("something else", "✅ I followed")).toBe(false);
-    expect(titleMatches(undefined, "x")).toBe(false);
+  it("accepts a payload-less message — polling never surfaces the postback payload", () => {
+    expect(confirmsFollow({ text: "done!" })).toBe(true);
+    expect(confirmsFollow({})).toBe(true);
   });
-});
-
-describe("follow retry cap (verify_follow_count mode)", () => {
-  it("exhausts after 3 retries", () => {
-    expect(followRetriesExhausted(0)).toBe(false);
-    expect(followRetriesExhausted(2)).toBe(false);
-    expect(followRetriesExhausted(3)).toBe(true);
+  it("accepts a typed reply that the old exact-title rule would have ignored", () => {
+    // "i followed" without the emoji left people stuck in AWAITING_FOLLOW before.
+    expect(confirmsFollow({ text: "i followed" })).toBe(true);
   });
 });

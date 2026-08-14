@@ -264,8 +264,7 @@ export class InstagramClient {
 
   /**
    * The connected account's profile. Requests only widely-supported fields so OAuth connect never
-   * fails on an account where an optional field (e.g. followers_count) isn't returnable; the
-   * follower count is fetched separately, on demand, by getFollowersCount.
+   * fails on an account where an optional field (e.g. followers_count) isn't returnable.
    */
   getMe(): Promise<IgProfile> {
     return this.get<IgProfile>(`/me`, {
@@ -282,14 +281,12 @@ export class InstagramClient {
     return res.data ?? [];
   }
 
-  /**
-   * Weak follower-count heuristic for verify_follow_count mode (Section: Step 3). The API cannot
-   * verify a specific user's follow; this only reads the account's own follower total.
-   */
-  async getFollowersCount(): Promise<number | undefined> {
-    const me = await this.get<IgProfile>(`/me`, { fields: "followers_count" });
-    return me.followers_count;
-  }
+  // NOTE: there is deliberately no getFollowersCount() here, and no follow check anywhere. No
+  // Instagram API can tell you whether a specific person follows you — the scopes this app holds
+  // (basic, manage_messages, manage_comments) expose no follower list and no relationship edge.
+  // An earlier version compared the account's TOTAL follower count before and after sending the
+  // gate, which is noise: anyone else following in that window passed a non-follower through, and
+  // a single unfollow elsewhere rejected a genuine one. The follow gate is a nudge, not a check.
 }
 
 // ---- token endpoints (no access token instance needed) ----
