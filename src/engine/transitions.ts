@@ -23,9 +23,37 @@ export function afterFollow(campaign: Campaign): State {
 }
 
 /** Postback payloads carried by our own buttons. Webhook mode delivers these verbatim; polling
- *  mode never surfaces them, which is why the predicate below also accepts plain messages. */
+ *  mode never surfaces them, which is why the predicates below also accept plain messages. */
 export const OPENING_PAYLOAD = "OPENING_TAP";
 export const FOLLOW_PAYLOAD = "FOLLOW_CONFIRM";
+
+/**
+ * Tag a button payload with the campaign that sent it, as `KIND:campaign_id`.
+ *
+ * Without this every campaign's opening button carried the identical payload "OPENING_TAP", so a
+ * tap proved only that *a* button was pressed — never which one. Someone who commented on two
+ * different posts had two funnels open, and one tap completed both, delivering both rewards for a
+ * single interaction. The payload is invisible to the person and never stored; it just rides along
+ * in the message and comes back on the press.
+ */
+export function taggedPayload(kind: string, campaignId: string): string {
+  return `${kind}:${campaignId}`;
+}
+
+/**
+ * Split a payload into its kind and the campaign that sent it.
+ *
+ * `campaignId` is null for an untagged payload — a button sent before tagging existed and still
+ * sitting in someone's inbox. Those must keep working, so callers fall back to the old
+ * advance-everything behavior rather than ignoring the press. Splitting on the FIRST colon only
+ * keeps campaign ids containing colons intact.
+ */
+export function parsePayload(payload: string | undefined): { kind: string | null; campaignId: string | null } {
+  if (!payload) return { kind: null, campaignId: null };
+  const i = payload.indexOf(":");
+  if (i === -1) return { kind: payload, campaignId: null };
+  return { kind: payload.slice(0, i), campaignId: payload.slice(i + 1) || null };
+}
 
 /**
  * Does this inbound message confirm the follow gate?
@@ -46,7 +74,8 @@ export const FOLLOW_PAYLOAD = "FOLLOW_CONFIRM";
  * from some other button, so those events don't cross-advance.
  */
 export function confirmsFollow(evt: { text?: string; payload?: string }): boolean {
-  if (evt.payload) return evt.payload === FOLLOW_PAYLOAD;
+  const { kind } = parsePayload(evt.payload);
+  if (kind) return kind === FOLLOW_PAYLOAD;
   return true;
 }
 

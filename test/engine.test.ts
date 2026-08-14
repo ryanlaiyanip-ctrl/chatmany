@@ -390,7 +390,8 @@ describe("follow gate is a button, not a quick-reply chip", () => {
     const gate = client.calls.button[0] as { igsid: string; text: string; buttons: unknown[] };
     expect(gate.igsid).toBe("user1");
     expect(gate.text).toBe("follow first");
-    expect(gate.buttons).toEqual([{ type: "postback", title: "✅ I followed", payload: "FOLLOW_CONFIRM" }]);
+    // Tagged with the campaign that sent it, so a press can be attributed to one funnel.
+    expect(gate.buttons).toEqual([{ type: "postback", title: "✅ I followed", payload: "FOLLOW_CONFIRM:c1" }]);
   });
 
   it("advances on the gate's own postback payload (webhook mode)", async () => {
@@ -398,7 +399,7 @@ describe("follow gate is a button, not a quick-reply chip", () => {
     await engine.handleComment(comment());
     await engine.handleMessage(message({ timestamp: T + 10 }));
 
-    await engine.handleMessage(message({ payload: "FOLLOW_CONFIRM", timestamp: T + 20 }));
+    await engine.handleMessage(message({ payload: "FOLLOW_CONFIRM:c1", timestamp: T + 20 }));
     const convo = await getConversation(db, "user1", "c1");
     expect(convo?.state).toBe("DONE");
     expect(convo?.followed).toBe(1);

@@ -339,22 +339,52 @@ describe("4 · the same person, more than once", () => {
     sim.note("⚠️  ONE reply satisfied BOTH funnels — they got both rewards, having engaged once.");
   });
 
-  it("★ webhook mode does NOT fix the two-videos case", async () => {
+  it("★ a tagged press advances ONLY the video they pressed on", async () => {
     const sim = new Sim(
-      "SCENARIO 4D — ★ same thing, but they TAP (webhook mode)",
-      "Does having the real payload disambiguate which video they meant?",
+      "SCENARIO 4D — ★ same thing, but they PRESS the button (webhook mode)",
+      "The button now carries the campaign that sent it, so the press is unambiguous.",
     );
     await sim.campaign(campaign({ campaign_id: "c1", media_id: "reel_1", keywords: ["LINK"] }));
     await sim.campaign(campaign({ campaign_id: "c2", media_id: "reel_2", keywords: ["GUIDE"], reward: { type: "link", value: "https://example.com/other" } }));
 
     await sim.comments("gus", "LINK", "reel_1");
     await sim.comments("gus", "GUIDE", "reel_2");
-    await sim.taps("gus", "Send it to me", "OPENING_TAP");
+    await sim.taps("gus", "Send it to me", "OPENING_TAP:c2");
 
-    expect(await sim.state("gus", "c1")).toBe("DONE");
     expect(await sim.state("gus", "c2")).toBe("DONE");
-    sim.note("⚠️  Still both. The payload is the constant 'OPENING_TAP' — it says a button was tapped,");
-    sim.note("   but not WHICH campaign's button. Webhooks don't help here; the payload carries no campaign id.");
+    expect(await sim.state("gus", "c1")).toBe("AWAITING_TAP");
+    sim.note("✅ Only the GUIDE reward went out. The LINK funnel is untouched, still waiting for its own press.");
+
+    await sim.taps("gus", "Send it to me", "OPENING_TAP:c1");
+    expect(await sim.state("gus", "c1")).toBe("DONE");
+    sim.note("✅ Pressing the other button then delivers the other reward. Two presses, two rewards.");
+  });
+
+  it("★ a legacy untagged button still works", async () => {
+    const sim = new Sim(
+      "SCENARIO 4D2 — ★ a button sent before tagging existed",
+      "Those DMs are already in people's inboxes. They must not break.",
+    );
+    await sim.campaign(campaign({ campaign_id: "c1", media_id: "reel_1", keywords: ["LINK"] }));
+    await sim.comments("uma", "LINK", "reel_1");
+    await sim.taps("uma", "Send it to me", "OPENING_TAP"); // no campaign id — the old format
+    expect(await sim.state("uma", "c1")).toBe("DONE");
+    sim.note("✅ Recognised and honoured, falling back to the old advance-everything behavior.");
+  });
+
+  it("typing still advances everything, because a typed reply says nothing about which", async () => {
+    const sim = new Sim(
+      "SCENARIO 4D3 — they type instead of pressing",
+      "The limit of the fix: text carries no campaign, so there is nothing to disambiguate with.",
+    );
+    await sim.campaign(campaign({ campaign_id: "c1", media_id: "reel_1", keywords: ["LINK"] }));
+    await sim.campaign(campaign({ campaign_id: "c2", media_id: "reel_2", keywords: ["GUIDE"], reward: { type: "link", value: "https://example.com/other" } }));
+    await sim.comments("vic", "LINK", "reel_1");
+    await sim.comments("vic", "GUIDE", "reel_2");
+    await sim.types("vic", "ok");
+    expect(await sim.state("vic", "c1")).toBe("DONE");
+    expect(await sim.state("vic", "c2")).toBe("DONE");
+    sim.note("Both, as before. Only a button press can be attributed to a campaign.");
   });
 
   it("★ two campaigns on the SAME post, one comment matching both", async () => {

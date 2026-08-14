@@ -14,7 +14,15 @@ import type {
 } from "../types";
 import { InstagramApiError } from "../api/client";
 import { commentTriggers, extractEmail } from "./match";
-import { FOLLOW_PAYLOAD, OPENING_PAYLOAD, afterFollow, afterTap, confirmsFollow } from "./transitions";
+import {
+  FOLLOW_PAYLOAD,
+  OPENING_PAYLOAD,
+  afterFollow,
+  afterTap,
+  confirmsFollow,
+  parsePayload,
+  taggedPayload,
+} from "./transitions";
 import {
   claimCommentAction,
   claimSend,
@@ -112,7 +120,7 @@ export class Engine {
     const button = {
       type: "postback" as const,
       title: campaign.copy.opening_button ?? "Continue",
-      payload: OPENING_PAYLOAD,
+      payload: taggedPayload(OPENING_PAYLOAD, campaign.campaign_id),
     };
     const ok = await this.trySend(
       () => this.client.privateReplyWithButtons(evt.comment_id, campaign.copy.opening, [button]),
@@ -136,7 +144,16 @@ export class Engine {
    */
   async handleMessage(evt: NormalizedMessage): Promise<void> {
     const open = await getOpenConversations(this.db, evt.igsid);
-    for (const convo of open) {
+
+    // If the press identifies which campaign's button it was, only that funnel advances. Everything
+    // else — a typed reply, or a legacy untagged button still sitting in someone's inbox — carries
+    // no such information, so it falls back to advancing every open funnel as before. That fallback
+    // is why someone with two funnels open still completes both by typing "ok": the message simply
+    // does not say which one they meant, and there is nothing to infer it from.
+    const { campaignId: tapped } = parsePayload(evt.payload);
+    const targets = tapped ? open.filter((c) => c.campaign_id === tapped) : open;
+
+    for (const convo of targets) {
       // Idempotency: only act on a message that arrived after our last transition, so re-reads of
       // the same message in the conversation history don't advance the funnel twice.
       if (evt.timestamp <= convo.updated_at) continue;
@@ -271,7 +288,7 @@ export class Engine {
     const button = {
       type: "postback" as const,
       title: campaign.copy.follow_button ?? DEFAULT_FOLLOW_BUTTON,
-      payload: FOLLOW_PAYLOAD,
+      payload: taggedPayload(FOLLOW_PAYLOAD, campaign.campaign_id),
     };
     return this.trySend(
       () =>

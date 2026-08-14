@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { FOLLOW_PAYLOAD, afterFollow, afterTap, confirmsFollow } from "../src/engine/transitions";
+import {
+  FOLLOW_PAYLOAD,
+  afterFollow,
+  afterTap,
+  confirmsFollow,
+  parsePayload,
+  taggedPayload,
+} from "../src/engine/transitions";
 import type { Campaign } from "../src/types";
 
 function campaign(overrides: Partial<Campaign>): Campaign {
@@ -31,6 +38,29 @@ describe("afterFollow", () => {
   });
   it("goes to DELIVER otherwise", () => {
     expect(afterFollow(campaign({}))).toBe("DELIVER");
+  });
+});
+
+describe("campaign-tagged button payloads", () => {
+  it("round-trips a campaign id", () => {
+    expect(parsePayload(taggedPayload(FOLLOW_PAYLOAD, "summer-drop"))).toEqual({
+      kind: "FOLLOW_CONFIRM",
+      campaignId: "summer-drop",
+    });
+  });
+  it("reads a legacy untagged payload as kind-only", () => {
+    // Buttons sent before tagging existed are still in people's inboxes; they must keep working.
+    expect(parsePayload("OPENING_TAP")).toEqual({ kind: "OPENING_TAP", campaignId: null });
+  });
+  it("is empty for no payload at all (a typed reply, or polling mode)", () => {
+    expect(parsePayload(undefined)).toEqual({ kind: null, campaignId: null });
+    expect(parsePayload("")).toEqual({ kind: null, campaignId: null });
+  });
+  it("keeps a campaign id that itself contains a colon", () => {
+    expect(parsePayload("OPENING_TAP:odd:id").campaignId).toBe("odd:id");
+  });
+  it("treats a trailing colon as untagged rather than an empty campaign", () => {
+    expect(parsePayload("OPENING_TAP:").campaignId).toBeNull();
   });
 });
 
