@@ -102,6 +102,16 @@ async function runPoll(env: Env): Promise<void> {
   const rt = await buildRuntime(env);
   if (!rt) return;
 
-  await pollComments(rt, env.DB);
-  await pollMessages(rt, env.DB);
+  // Isolated so one poll can never starve the other. pollComments used to run first with no
+  // guard, which meant a throw there silently skipped the message poll for that whole tick.
+  try {
+    await pollComments(rt, env.DB);
+  } catch (e) {
+    console.warn(`[chatmany] pollComments failed: ${e instanceof Error ? e.message : e}`);
+  }
+  try {
+    await pollMessages(rt, env.DB);
+  } catch (e) {
+    console.warn(`[chatmany] pollMessages failed: ${e instanceof Error ? e.message : e}`);
+  }
 }

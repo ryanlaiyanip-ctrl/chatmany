@@ -4,6 +4,7 @@
 import { buildAuthorizeUrl, exchangeCodeForShortLivedToken, exchangeForLongLivedToken } from "../auth/oauth";
 import { InstagramClient } from "../api/client";
 import { clearAuth, getAuth, kvGet, kvSet, now, saveAuth } from "../db";
+import { getPollAgeSeconds, getPollError } from "../poller/messagePoll";
 import type { Env } from "../types";
 import { json, redirect, html } from "./http";
 
@@ -95,6 +96,12 @@ export async function handleCallback(env: Env, url: URL): Promise<Response> {
 export async function handleStatus(env: Env): Promise<Response> {
   const auth = await getAuth(env.DB);
   if (!auth) return json({ connected: false });
+  // Poll health. A stalled poller used to be completely invisible from the outside: the dashboard
+  // looked fine while no message had been processed for hours. poll_age_seconds is the tell —
+  // a healthy message poll refreshes its cursor every tick, so anything beyond a few minutes
+  // means the poller is not completing.
+  const pollAge = await getPollAgeSeconds(env.DB);
+  const pollError = await getPollError(env.DB);
   return json({
     connected: true,
     username: auth.username,
@@ -103,6 +110,9 @@ export async function handleStatus(env: Env): Promise<Response> {
     ig_user_id: auth.ig_user_id,
     expires_at: auth.expires_at,
     expires_in_days: Math.max(0, Math.round((auth.expires_at - now()) / 86400)),
+    poll_age_seconds: pollAge,
+    poll_healthy: pollAge !== null && pollAge < 600,
+    poll_error: pollError,
   });
 }
 
