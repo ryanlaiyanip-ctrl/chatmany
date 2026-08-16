@@ -521,7 +521,7 @@ function defaultDraft() {
     copy: {
       opening: "Hey! Tap below to grab the link 👇",
       opening_button: "Send it to me",
-      follow_gate: "Follow us first so you don't miss the next drop 🙌",
+      follow_gate: "Make sure you're following so you don't miss the next one 🙌 Not following yet? Follow, then tap below.",
       follow_button: "✅ I followed",
       email_ask: "Want it in your inbox too? Tap your email or reply with it.",
       delivery: "Here you go 🎉 {reward}",
@@ -854,8 +854,9 @@ function renderPreview() {
       blocks.push(`<div class="dm-note">Opening DM is off — the funnel won’t start.</div>`);
     }
     if (d.check_follow) {
+      // Rendered as a button, not a quick-reply chip, to match what the engine actually sends.
       blocks.push(`<div class="bubble in">${esc(d.copy.follow_gate)}</div>`);
-      blocks.push(`<div class="qr"><span class="pill">${esc(d.copy.follow_button || "✅ I followed")}</span></div>`);
+      blocks.push(`<div class="dm-btn">${esc(d.copy.follow_button || "✅ I followed")}</div>`);
       blocks.push(`<div class="bubble out">${esc(d.copy.follow_button || "✅ I followed")}</div>`);
     }
     if (d.ask_email) {

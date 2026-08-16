@@ -9,13 +9,12 @@
       "exclude": ["scam"],
       "public_reply": { "enabled": true, "texts": ["Sent you a DM! 📩", "Check your DMs 👀"] },
       "check_follow": true,
-      "verify_follow_count": false,
       "ask_email": true,
       "reward": { "type": "link", "value": "https://example.com/guide" },
       "copy": {
         "opening": "Hey! Tap below to grab the guide 👇",
         "opening_button": "Send me the guide",
-        "follow_gate": "Follow us first so you don't miss the next drop 🙌",
+        "follow_gate": "Make sure you're following so you don't miss the next one 🙌 Not following yet? Follow, then tap below.",
         "follow_button": "✅ I followed",
         "email_ask": "Want it in your inbox too? Tap your email or reply with it.",
         "delivery": "Here you go 🎉 {reward}"

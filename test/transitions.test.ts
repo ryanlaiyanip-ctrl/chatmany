@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  FOLLOW_PAYLOAD,
   afterFollow,
   afterTap,
-  expectedTitleForState,
-  followRetriesExhausted,
-  titleMatches,
+  confirmsFollow,
+  emailReasksExhausted,
+  parsePayload,
+  taggedPayload,
 } from "../src/engine/transitions";
 import type { Campaign } from "../src/types";
 
@@ -40,25 +42,51 @@ describe("afterFollow", () => {
   });
 });
 
-describe("polling-mode tap resolution (expected-title map)", () => {
-  it("AWAITING_TAP expects no specific title (any message advances)", () => {
-    expect(expectedTitleForState("AWAITING_TAP", campaign({}))).toBeNull();
-  });
-  it("AWAITING_FOLLOW expects the follow button title", () => {
-    const c = campaign({ copy: { opening: "hi", delivery: "d", follow_button: "✅ I followed" } });
-    expect(expectedTitleForState("AWAITING_FOLLOW", c)).toBe("✅ I followed");
-  });
-  it("titleMatches is case-insensitive and whitespace-tolerant", () => {
-    expect(titleMatches("  ✅ I FOLLOWED ", "✅ I followed")).toBe(true);
-    expect(titleMatches("something else", "✅ I followed")).toBe(false);
-    expect(titleMatches(undefined, "x")).toBe(false);
+describe("email re-ask cap", () => {
+  it("allows two nudges, then stops", () => {
+    expect(emailReasksExhausted(0)).toBe(false);
+    expect(emailReasksExhausted(1)).toBe(false);
+    expect(emailReasksExhausted(2)).toBe(true);
+    expect(emailReasksExhausted(99)).toBe(true);
   });
 });
 
-describe("follow retry cap (verify_follow_count mode)", () => {
-  it("exhausts after 3 retries", () => {
-    expect(followRetriesExhausted(0)).toBe(false);
-    expect(followRetriesExhausted(2)).toBe(false);
-    expect(followRetriesExhausted(3)).toBe(true);
+describe("campaign-tagged button payloads", () => {
+  it("round-trips a campaign id", () => {
+    expect(parsePayload(taggedPayload(FOLLOW_PAYLOAD, "summer-drop"))).toEqual({
+      kind: "FOLLOW_CONFIRM",
+      campaignId: "summer-drop",
+    });
+  });
+  it("reads a legacy untagged payload as kind-only", () => {
+    // Buttons sent before tagging existed are still in people's inboxes; they must keep working.
+    expect(parsePayload("OPENING_TAP")).toEqual({ kind: "OPENING_TAP", campaignId: null });
+  });
+  it("is empty for no payload at all (a typed reply, or polling mode)", () => {
+    expect(parsePayload(undefined)).toEqual({ kind: null, campaignId: null });
+    expect(parsePayload("")).toEqual({ kind: null, campaignId: null });
+  });
+  it("keeps a campaign id that itself contains a colon", () => {
+    expect(parsePayload("OPENING_TAP:odd:id").campaignId).toBe("odd:id");
+  });
+  it("treats a trailing colon as untagged rather than an empty campaign", () => {
+    expect(parsePayload("OPENING_TAP:").campaignId).toBeNull();
+  });
+});
+
+describe("follow-gate confirmation", () => {
+  it("accepts our own postback payload (webhook mode)", () => {
+    expect(confirmsFollow({ payload: FOLLOW_PAYLOAD })).toBe(true);
+  });
+  it("rejects a different button's payload so events don't cross-advance", () => {
+    expect(confirmsFollow({ payload: "SOME_OTHER_BUTTON" })).toBe(false);
+  });
+  it("accepts a payload-less message — polling never surfaces the postback payload", () => {
+    expect(confirmsFollow({ text: "done!" })).toBe(true);
+    expect(confirmsFollow({})).toBe(true);
+  });
+  it("accepts a typed reply that the old exact-title rule would have ignored", () => {
+    // "i followed" without the emoji left people stuck in AWAITING_FOLLOW before.
+    expect(confirmsFollow({ text: "i followed" })).toBe(true);
   });
 });

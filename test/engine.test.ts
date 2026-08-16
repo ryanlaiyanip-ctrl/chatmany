@@ -150,14 +150,14 @@ describe("message handling: full funnel", () => {
     // tap
     await engine.handleMessage(message({ timestamp: T + 10 }));
     expect((await getConversation(db, "user1", "c1"))?.state).toBe("AWAITING_FOLLOW");
-    expect(client.calls.quick).toHaveLength(1); // follow gate sent
+    expect(client.calls.button).toHaveLength(1); // follow gate sent as a button template, not a chip
 
-    // follow confirm (matches follow button title)
+    // follow confirm — the gate's postback posts no visible text, so any inbound reply advances
     await engine.handleMessage(message({ text: "✅ I followed", timestamp: T + 20 }));
     const afterFollow = await getConversation(db, "user1", "c1");
     expect(afterFollow?.state).toBe("AWAITING_EMAIL");
     expect(afterFollow?.followed).toBe(1);
-    expect(client.calls.quick).toHaveLength(2); // email ask sent
+    expect(client.calls.quick).toHaveLength(1); // email ask (still a chip — the email chip is native)
 
     // email
     await engine.handleMessage(message({ text: "me@example.com", timestamp: T + 30 }));
@@ -307,7 +307,7 @@ describe("deleting a campaign stops it (QA: does delete actually stop an active 
     await engine.handleComment(comment());
     await engine.handleMessage(message({ timestamp: T + 10 })); // tap → AWAITING_FOLLOW
     expect((await getConversation(db, "user1", "c1"))?.state).toBe("AWAITING_FOLLOW");
-    expect(client.calls.quick).toHaveLength(1); // follow-gate already sent
+    expect(client.calls.button).toHaveLength(1); // follow-gate already sent
 
     await deleteCampaign(db, "c1"); // delete mid-funnel, exactly like clicking Delete in the UI
     // Delete cascades: their conversation row for c1 is gone too, not just orphaned in place —
@@ -317,7 +317,7 @@ describe("deleting a campaign stops it (QA: does delete actually stop an active 
     // The next inbound message from this same person must not crash and must not send anything —
     // getCampaign(campaign_id) resolves to null for a deleted campaign, and the engine skips it.
     await engine.handleMessage(message({ text: "✅ I followed", timestamp: T + 20 }));
-    expect(client.calls.quick).toHaveLength(1); // no additional send
+    expect(client.calls.button).toHaveLength(1); // no additional send
     expect(client.calls.text).toHaveLength(0); // resource never delivered
     expect(await getConversation(db, "user1", "c1")).toBeNull(); // still gone, nothing resurrected it
     const c = await counts();
@@ -380,6 +380,52 @@ describe("archiving a campaign (soft-delete)", () => {
 // Instagram already processed it) must not cause the same DM to be sent to the person twice.
 // The engine deliberately treats a thrown send as "never happened" so real failures retry —
 // but when the message actually landed, that retry is a duplicate the recipient sees.
+describe("follow gate is a button, not a quick-reply chip", () => {
+  it("sends the gate as a button template carrying our postback payload", async () => {
+    await upsertCampaign(db, campaign({ check_follow: true }), true);
+    await engine.handleComment(comment());
+    await engine.handleMessage(message({ timestamp: T + 10 }));
+
+    expect(client.calls.quick).toHaveLength(0); // no chip — chips vanish once they type or leave
+    const gate = client.calls.button[0] as { igsid: string; text: string; buttons: unknown[] };
+    expect(gate.igsid).toBe("user1");
+    expect(gate.text).toBe("follow first");
+    // Tagged with the campaign that sent it, so a press can be attributed to one funnel.
+    expect(gate.buttons).toEqual([{ type: "postback", title: "✅ I followed", payload: "FOLLOW_CONFIRM:c1" }]);
+  });
+
+  it("advances on the gate's own postback payload (webhook mode)", async () => {
+    await upsertCampaign(db, campaign({ check_follow: true }), true);
+    await engine.handleComment(comment());
+    await engine.handleMessage(message({ timestamp: T + 10 }));
+
+    await engine.handleMessage(message({ payload: "FOLLOW_CONFIRM:c1", timestamp: T + 20 }));
+    const convo = await getConversation(db, "user1", "c1");
+    expect(convo?.state).toBe("DONE");
+    expect(convo?.followed).toBe(1);
+  });
+
+  it("does not advance on a different button's payload", async () => {
+    await upsertCampaign(db, campaign({ check_follow: true }), true);
+    await engine.handleComment(comment());
+    await engine.handleMessage(message({ timestamp: T + 10 }));
+
+    await engine.handleMessage(message({ payload: "SOME_OTHER_BUTTON", timestamp: T + 20 }));
+    expect((await getConversation(db, "user1", "c1"))?.state).toBe("AWAITING_FOLLOW");
+    expect(client.calls.text).toHaveLength(0); // reward not delivered
+  });
+
+  it("advances on a plain typed reply, since polling never sees the payload", async () => {
+    await upsertCampaign(db, campaign({ check_follow: true }), true);
+    await engine.handleComment(comment());
+    await engine.handleMessage(message({ timestamp: T + 10 }));
+
+    // The old rule required the button title verbatim; "i followed" left them stuck forever.
+    await engine.handleMessage(message({ text: "i followed", timestamp: T + 20 }));
+    expect((await getConversation(db, "user1", "c1"))?.state).toBe("DONE");
+  });
+});
+
 describe("duplicate sends when a delivered message reports failure", () => {
   it("does not send the opening DM twice when the first send delivered but errored", async () => {
     const db = makeTestDb();
@@ -406,12 +452,12 @@ describe("duplicate sends when a delivered message reports failure", () => {
     await upsertCampaign(db, campaign({ check_follow: true }), true);
     await engine.handleComment(comment());
 
-    client.deliverThenFailNext.quick = 1;
+    client.deliverThenFailNext.button = 1;
     await engine.handleMessage(message({ timestamp: T + 10 }));
-    const afterFirst = client.calls.quick.length;
+    const afterFirst = client.calls.button.length;
     expect(afterFirst).toBe(1); // follow gate reached the person
 
     await engine.handleMessage(message({ timestamp: T + 11 }));
-    expect(client.calls.quick).toHaveLength(afterFirst);
+    expect(client.calls.button).toHaveLength(afterFirst);
   });
 });

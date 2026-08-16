@@ -14,7 +14,16 @@ import type {
 } from "../types";
 import { InstagramApiError } from "../api/client";
 import { commentTriggers, extractEmail } from "./match";
-import { afterFollow, afterTap, expectedTitleForState, followRetriesExhausted, titleMatches } from "./transitions";
+import {
+  FOLLOW_PAYLOAD,
+  OPENING_PAYLOAD,
+  afterFollow,
+  afterTap,
+  confirmsFollow,
+  emailReasksExhausted,
+  parsePayload,
+  taggedPayload,
+} from "./transitions";
 import {
   claimCommentAction,
   claimSend,
@@ -24,8 +33,6 @@ import {
   getConversation,
   getOpenConversations,
   isCommentProcessed,
-  kvGet,
-  kvSet,
   logEvent,
   markCommentProcessed,
   releaseSend,
@@ -33,8 +40,13 @@ import {
 } from "../db";
 import type { ConversationRow } from "../db";
 
-const OPENING_PAYLOAD = "OPENING_TAP";
-const FOLLOW_PAYLOAD = "FOLLOW_CONFIRM";
+// The gate is a nudge, not a check — nothing verifies the follow (no Instagram API can). The copy
+// carries all of the persuasion, which is why the button stays worded as an attestation: tapping
+// something that says "I followed" prompts people to actually go and follow first. A neutral label
+// like "Send me the resource" delivers exactly the same reward while asking nothing of them.
+const DEFAULT_FOLLOW_GATE =
+  "Make sure you're following so you don't miss the next one 🙌 Not following yet? Follow, then tap below.";
+const DEFAULT_FOLLOW_BUTTON = "✅ I followed";
 
 /** Deterministic rotation through public-reply variants so it looks human. */
 function pickRotating(texts: string[], seed: string): string {
@@ -109,7 +121,7 @@ export class Engine {
     const button = {
       type: "postback" as const,
       title: campaign.copy.opening_button ?? "Continue",
-      payload: OPENING_PAYLOAD,
+      payload: taggedPayload(OPENING_PAYLOAD, campaign.campaign_id),
     };
     const ok = await this.trySend(
       () => this.client.privateReplyWithButtons(evt.comment_id, campaign.copy.opening, [button]),
@@ -133,7 +145,16 @@ export class Engine {
    */
   async handleMessage(evt: NormalizedMessage): Promise<void> {
     const open = await getOpenConversations(this.db, evt.igsid);
-    for (const convo of open) {
+
+    // If the press identifies which campaign's button it was, only that funnel advances. Everything
+    // else — a typed reply, or a legacy untagged button still sitting in someone's inbox — carries
+    // no such information, so it falls back to advancing every open funnel as before. That fallback
+    // is why someone with two funnels open still completes both by typing "ok": the message simply
+    // does not say which one they meant, and there is nothing to infer it from.
+    const { campaignId: tapped } = parsePayload(evt.payload);
+    const targets = tapped ? open.filter((c) => c.campaign_id === tapped) : open;
+
+    for (const convo of targets) {
       // Idempotency: only act on a message that arrived after our last transition, so re-reads of
       // the same message in the conversation history don't advance the funnel twice.
       if (evt.timestamp <= convo.updated_at) continue;
@@ -146,10 +167,10 @@ export class Engine {
           await this.onTap(campaign, evt);
           break;
         case "AWAITING_FOLLOW":
-          await this.onFollow(campaign, evt, convo.follow_retries);
+          await this.onFollow(campaign, evt);
           break;
         case "AWAITING_EMAIL":
-          await this.onEmail(campaign, evt);
+          await this.onEmail(campaign, evt, convo.email_retries);
           break;
         default:
           break; // NEW / DELIVER / DONE — nothing to do
@@ -164,20 +185,8 @@ export class Engine {
     await this.enterState(campaign, evt.igsid, afterTap(campaign), { entryEvent: "button_clicked" });
   }
 
-  private async onFollow(campaign: Campaign, evt: NormalizedMessage, retries: number): Promise<void> {
-    const expected = expectedTitleForState("AWAITING_FOLLOW", campaign) ?? "";
-    const isConfirm = evt.payload === FOLLOW_PAYLOAD || titleMatches(evt.text, expected);
-    if (!isConfirm) return; // unrelated message; stay in AWAITING_FOLLOW
-
-    // verify_follow_count: weak heuristic (documented unreliable). Compare follower total against
-    // the baseline captured when the gate was sent; if it didn't grow, re-send and stay (capped).
-    if (campaign.verify_follow_count && !followRetriesExhausted(retries)) {
-      const looksFollowed = await this.followerCountGrew(campaign, evt.igsid);
-      if (!looksFollowed) {
-        await this.resendFollowGate(campaign, evt.igsid, retries);
-        return;
-      }
-    }
+  private async onFollow(campaign: Campaign, evt: NormalizedMessage): Promise<void> {
+    if (!confirmsFollow(evt)) return; // a different button's postback; stay in AWAITING_FOLLOW
 
     await this.enterState(campaign, evt.igsid, afterFollow(campaign), {
       entryEvent: "follow_confirmed",
@@ -185,18 +194,33 @@ export class Engine {
     });
   }
 
-  private async onEmail(campaign: Campaign, evt: NormalizedMessage): Promise<void> {
+  private async onEmail(campaign: Campaign, evt: NormalizedMessage, reasks: number): Promise<void> {
     const email = evt.email ?? extractEmail(evt.text);
     if (!email) {
       // Not a valid email (no @ / not chip-provided) — re-ask instead of silently ignoring it,
       // so the person gets a nudge rather than the bot going quiet. Resource is never sent from here.
-      await this.resendEmailAsk(campaign, evt.igsid);
+      await this.resendEmailAsk(campaign, evt.igsid, reasks);
       return;
     }
     await this.enterState(campaign, evt.igsid, "DELIVER", { entryEvent: "email_captured", patch: { email } });
   }
 
-  private async resendEmailAsk(campaign: Campaign, igsid: string): Promise<void> {
+  /**
+   * Nudge someone who replied with something that isn't an email — but only a couple of times.
+   *
+   * Uncapped, this re-asked on every non-email reply, so somebody who simply kept talking got one
+   * more DM per message; a photo, sticker or voice note counts too, since those arrive with no text
+   * at all. Repeatedly DMing a person who is not engaging is what platform spam detection watches
+   * for, so the risk lands on the sending account, not just the reader's patience.
+   *
+   * Hitting the cap only stops the nudging. The conversation stays in AWAITING_EMAIL, so an address
+   * sent later is still captured and still delivers the reward.
+   */
+  private async resendEmailAsk(campaign: Campaign, igsid: string, reasks: number): Promise<void> {
+    if (emailReasksExhausted(reasks)) {
+      console.warn(`[chatmany] email re-ask cap reached for ${igsid} on ${campaign.campaign_id}; staying quiet.`);
+      return;
+    }
     const ok = await this.trySend(
       () =>
         this.client.sendQuickReplies(
@@ -210,7 +234,10 @@ export class Engine {
     // fail-clean pattern as every other send: a failed resend leaves updated_at untouched so the
     // same message retries cleanly on the next poll instead of being silently dropped.
     if (ok) {
-      await updateConversation(this.db, igsid, campaign.campaign_id, { state: "AWAITING_EMAIL" });
+      await updateConversation(this.db, igsid, campaign.campaign_id, {
+        state: "AWAITING_EMAIL",
+        email_retries: reasks + 1,
+      });
     }
   }
 
@@ -234,16 +261,8 @@ export class Engine {
 
     switch (target) {
       case "AWAITING_FOLLOW": {
-        const ok = await this.trySend(
-          () =>
-            this.client.sendQuickReplies(igsid, campaign.copy.follow_gate ?? "Follow us first 🙌", [
-              { content_type: "text", title: campaign.copy.follow_button ?? "✅ I followed", payload: FOLLOW_PAYLOAD },
-            ]),
-          "follow_gate",
-          `follow_gate:${campaign.campaign_id}:${igsid}`,
-        );
+        const ok = await this.sendFollowGate(campaign, igsid);
         if (!ok) return;
-        if (campaign.verify_follow_count) await this.captureFollowerBaseline(campaign, igsid);
         await commit("AWAITING_FOLLOW");
         break;
       }
@@ -278,44 +297,24 @@ export class Engine {
     }
   }
 
-  private async resendFollowGate(campaign: Campaign, igsid: string, retries: number): Promise<void> {
-    const ok = await this.trySend(
+  /**
+   * Send the follow gate as a button-template message — the same shape as the opening DM, and for
+   * the same reason: it stays in the transcript. The quick-reply chips this replaced were dropped
+   * by Instagram as soon as the person typed, left, or returned to the thread, leaving them in
+   * AWAITING_FOLLOW with nothing to tap.
+   */
+  private async sendFollowGate(campaign: Campaign, igsid: string): Promise<boolean> {
+    const button = {
+      type: "postback" as const,
+      title: campaign.copy.follow_button ?? DEFAULT_FOLLOW_BUTTON,
+      payload: taggedPayload(FOLLOW_PAYLOAD, campaign.campaign_id),
+    };
+    return this.trySend(
       () =>
-        this.client.sendQuickReplies(igsid, campaign.copy.follow_gate ?? "Follow us first 🙌", [
-          { content_type: "text", title: campaign.copy.follow_button ?? "✅ I followed", payload: FOLLOW_PAYLOAD },
-        ]),
-      "follow_gate_resend",
+        this.client.sendButtonTemplate({ igsid }, campaign.copy.follow_gate ?? DEFAULT_FOLLOW_GATE, [button]),
+      "follow_gate",
+      `follow_gate:${campaign.campaign_id}:${igsid}`,
     );
-    if (ok) {
-      await updateConversation(this.db, igsid, campaign.campaign_id, { follow_retries: retries + 1 });
-    }
-  }
-
-  // ---- verify_follow_count helpers (weak heuristic) ----
-
-  private baselineKey(campaign: Campaign, igsid: string): string {
-    return `follow_baseline:${campaign.campaign_id}:${igsid}`;
-  }
-
-  private async captureFollowerBaseline(campaign: Campaign, igsid: string): Promise<void> {
-    try {
-      const count = await this.client.getFollowersCount();
-      if (count !== undefined) await kvSet(this.db, this.baselineKey(campaign, igsid), String(count));
-    } catch {
-      // best-effort; absence just means we fail open on confirm
-    }
-  }
-
-  private async followerCountGrew(campaign: Campaign, igsid: string): Promise<boolean> {
-    const baselineRaw = await kvGet(this.db, this.baselineKey(campaign, igsid));
-    if (baselineRaw === null) return true; // no baseline → fail open (advance)
-    try {
-      const current = await this.client.getFollowersCount();
-      if (current === undefined) return true;
-      return current > Number(baselineRaw);
-    } catch {
-      return true;
-    }
   }
 
   // ---- send helpers ----

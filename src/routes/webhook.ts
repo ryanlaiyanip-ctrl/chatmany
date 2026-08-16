@@ -2,6 +2,7 @@
 // GET verifies the subscription handshake; POST verifies the X-Hub-Signature-256 signature
 // (mandatory) then normalizes comment/message events into the same transport-agnostic engine.
 
+import { WEBHOOK_FIELDS } from "../api/client";
 import { buildRuntime, toUnixSeconds } from "../runtime";
 import type { Env, NormalizedComment, NormalizedMessage } from "../types";
 import { json } from "./http";
@@ -15,6 +16,36 @@ export function handleWebhookVerify(env: Env, url: URL): Response {
     return new Response(challenge, { status: 200, headers: { "content-type": "text/plain" } });
   }
   return new Response("forbidden", { status: 403 });
+}
+
+/**
+ * GET|POST /admin/webhook — owner-only. GET reports whether this account is actually subscribed;
+ * POST (re)subscribes it. Connecting already subscribes automatically, so this is the retry path
+ * when that failed, and the way to confirm a silent webhook is a subscription problem rather than
+ * a signature or routing one.
+ */
+export async function handleWebhookAdmin(env: Env, method: string): Promise<Response> {
+  const rt = await buildRuntime(env);
+  if (!rt) return json({ error: "no Instagram account connected" }, 400);
+  try {
+    if (method === "POST") {
+      await rt.client.subscribeToWebhooks();
+      return json({ ok: true, subscribed_fields: WEBHOOK_FIELDS, mode: env.MODE });
+    }
+    const subs = await rt.client.getWebhookSubscriptions();
+    return json({
+      mode: env.MODE,
+      subscribed: subs.length > 0,
+      subscriptions: subs,
+      verify_token_configured: Boolean(env.WEBHOOK_VERIFY_TOKEN),
+      note:
+        env.MODE === "webhook"
+          ? "Events also require the callback URL configured in the Meta app dashboard."
+          : "MODE is not 'webhook'; incoming events are ignored in favour of polling.",
+    });
+  } catch (e) {
+    return json({ error: e instanceof Error ? e.message : String(e) }, 502);
+  }
 }
 
 /** POST /webhook — verify signature, then dispatch normalized events to the engine. */

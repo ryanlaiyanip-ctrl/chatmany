@@ -10,6 +10,9 @@ export interface Env {
   GRAPH_VERSION: string;
   MODE: "polling" | "webhook";
   POLL_INTERVAL_SECONDS: string;
+  /** Webhook mode only: seconds between slow reconciliation polls that catch missed webhook
+   *  deliveries. "off" or 0 disables them (pure push). Defaults to 900. */
+  WEBHOOK_RECONCILE_SECONDS?: string;
   REDIRECT_URI: string;
 
   // secrets (wrangler secret put ...)
@@ -68,6 +71,8 @@ export interface Campaign {
   /** @deprecated Instagram's API cannot like comments. Accepted for backwards compatibility; ignored. */
   like_comment?: boolean;
   check_follow?: boolean;
+  /** @deprecated No API can verify a follow; the follower-count heuristic this drove was noise.
+   *  Accepted for backwards compatibility so older saved campaigns keep loading; ignored. */
   verify_follow_count?: boolean;
   ask_email?: boolean;
   reward: RewardConfig;
