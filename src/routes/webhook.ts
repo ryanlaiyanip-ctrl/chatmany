@@ -1,4 +1,14 @@
-// Webhook mode (Section 5B, OPTIONAL — active only when MODE=webhook). Push replaces both polls.
+// Inbound webhooks. NOTE: this route is NOT gated on MODE — if Meta is configured to push to
+// /webhook, those events are verified and dispatched to the engine immediately, whatever MODE says.
+//
+// MODE governs the CRON only (see runtime.pollIntervalSeconds): "polling" polls at
+// POLL_INTERVAL_SECONDS, "webhook" drops to the slower WEBHOOK_RECONCILE_SECONDS sweep.
+//
+// So MODE = "polling" WITH the Meta callback configured is a deliberate, and arguably the best,
+// combination: push makes delivery instant, and a frequent poll stays underneath as a safety net
+// for anything a webhook delivery drops. Running both is safe — the idempotency ledgers recognise
+// an already-handled comment and skip it. Do not "fix" this by gating the route on MODE; that
+// would silently turn instant delivery back into poll-speed delivery.
 // GET verifies the subscription handshake; POST verifies the X-Hub-Signature-256 signature
 // (mandatory) then normalizes comment/message events into the same transport-agnostic engine.
 
@@ -41,7 +51,7 @@ export async function handleWebhookAdmin(env: Env, method: string): Promise<Resp
       note:
         env.MODE === "webhook"
           ? "Events also require the callback URL configured in the Meta app dashboard."
-          : "MODE is not 'webhook'; incoming events are ignored in favour of polling.",
+          : `MODE is 'polling', which only affects the cron. Pushed events are still processed the moment they arrive, so a configured callback URL gives instant delivery with polling every ${env.POLL_INTERVAL_SECONDS ?? "?"}s underneath as a safety net.`,
     });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 502);
