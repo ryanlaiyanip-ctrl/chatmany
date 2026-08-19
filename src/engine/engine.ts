@@ -263,9 +263,15 @@ export class Engine {
       title: buttonTitle(campaign.copy.follow_button, DEFAULT_FOLLOW_BUTTON),
       payload: taggedPayload(FOLLOW_PAYLOAD, campaign.campaign_id),
     };
+    // Claimed on the counter's CURRENT value, so two presses arriving at once contend for the same
+    // key and exactly one of them sends. Without this both read reasks=0, both send, and both write
+    // 1 — the cap still terminates, but it lets through roughly one extra DM per concurrent press,
+    // which defeats the point of having a cap. The key advances with the counter, so the second
+    // (legitimate) nudge is not blocked by the first one's claim.
     const ok = await this.trySend(
       () => this.client.sendButtonTemplate({ igsid }, campaign.copy.follow_gate ?? DEFAULT_FOLLOW_GATE, [button]),
       "follow_gate_resend",
+      `follow_gate_resend:${campaign.campaign_id}:${igsid}:${reasks}`,
     );
     if (ok) {
       await updateConversation(this.db, igsid, campaign.campaign_id, {
@@ -310,6 +316,9 @@ export class Engine {
           [{ content_type: "user_email" }],
         ),
       "email_ask_resend",
+      // Same reasoning as the follow-gate re-send: claimed on the counter's current value, so
+      // concurrent replies contend for one key instead of each sending their own nudge.
+      `email_ask_resend:${campaign.campaign_id}:${igsid}:${reasks}`,
     );
     // Only mark the invalid-reply message as handled once the re-ask actually sent — same
     // fail-clean pattern as every other send: a failed resend leaves updated_at untouched so the
