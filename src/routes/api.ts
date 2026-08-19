@@ -200,7 +200,12 @@ async function contactsCsv(env: Env, url: URL): Promise<Response> {
 }
 
 function csv(v: string): string {
-  return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+  // Neutralize spreadsheet formulas before quoting. Excel, Sheets and Numbers all evaluate a cell
+  // whose first character is = + - or @, so a contact who types `=cmd|'/c calc'!A1@x.com` as their
+  // email becomes a live formula in the owner's own export. A leading apostrophe forces the cell to
+  // be read as text; Excel and Sheets both hide it in the displayed value.
+  const safe = /^[=+\-@]/.test(v) ? `'${v}` : v;
+  return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
 async function safeJson(req: Request): Promise<Record<string, unknown>> {

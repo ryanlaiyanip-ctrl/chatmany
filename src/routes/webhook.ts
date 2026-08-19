@@ -76,6 +76,23 @@ export async function handleWebhookEvent(env: Env, req: Request): Promise<Respon
   const rt = await buildRuntime(env);
   if (!rt) return json({ ok: true, note: "no account connected" });
 
+  // Every event in the batch is dispatched independently. One event that throws must never block
+  // the others: this is the push path, and blocking it is exactly what turns a single bad event
+  // into "nobody got their DM". A failed event is left for the reconciliation poll underneath to
+  // pick up (the engine commits state only after a successful send, so nothing is half-applied),
+  // which is what that poll is for. We still answer 200 so Meta does not re-push the events that
+  // already succeeded — they are idempotent, but repeated 5xx marks the endpoint unhealthy and
+  // Meta eventually stops delivering to it altogether.
+  let failed = 0;
+  const dispatch = async (label: string, run: () => Promise<void>) => {
+    try {
+      await run();
+    } catch (e) {
+      failed++;
+      console.warn(`[chatmany] webhook ${label} failed: ${e instanceof Error ? e.message : e}`);
+    }
+  };
+
   for (const entry of body.entry ?? []) {
     // Comment change events.
     for (const change of entry.changes ?? []) {
@@ -93,7 +110,7 @@ export async function handleWebhookEvent(env: Env, req: Request): Promise<Respon
         media_id: mediaId,
         timestamp: toUnixSeconds(v.timestamp),
       };
-      await rt.engine.handleComment(evt);
+      await dispatch(`comment ${v.id}`, () => rt.engine.handleComment(evt));
     }
 
     // Messaging events (taps, replies, postbacks).
@@ -108,11 +125,11 @@ export async function handleWebhookEvent(env: Env, req: Request): Promise<Respon
         payload,
         timestamp: m.timestamp ? Math.floor(m.timestamp / 1000) : toUnixSeconds(undefined),
       };
-      await rt.engine.handleMessage(evt);
+      await dispatch(`message from ${igsid}`, () => rt.engine.handleMessage(evt));
     }
   }
 
-  return json({ ok: true });
+  return failed > 0 ? json({ ok: true, failed }) : json({ ok: true });
 }
 
 async function verifySignature(appSecret: string, raw: string, header: string | null): Promise<boolean> {

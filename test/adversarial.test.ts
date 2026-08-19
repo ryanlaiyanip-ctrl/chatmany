@@ -94,17 +94,24 @@ describe("hostile campaign ids (config import accepts any string)", () => {
     expect((await getConversation(db, "u1", id))?.state).toBe("DONE");
   });
 
-  it("DEFECT: a huge campaign id produces a payload Instagram will reject, with no guard", async () => {
+  it("a huge campaign id falls back to an untagged payload instead of an unsendable one", async () => {
     const huge = "x".repeat(2000);
-    // validateCampaign imposes no length limit, so config import accepts this happily.
+    // validateCampaign still imposes no length limit, so config import accepts this happily.
     expect(() => validateCampaign({ ...campaign({ campaign_id: huge }) })).not.toThrow();
 
     await upsertCampaign(db, campaign({ campaign_id: huge }), true);
     await engine.handleComment(comment());
     const sent = client.calls.privateReply[0] as { buttons: { payload: string }[] };
-    expect(sent.buttons[0]!.payload.length).toBeGreaterThan(1000);
-    // Meta caps postback payloads at ~1000 chars. Nothing here notices; the send would fail in
-    // production on every attempt, and a rejected opening is retried forever (see 4F).
+    const payload = sent.buttons[0]!.payload;
+
+    // Meta caps postback payloads at ~1000 chars and rejects the whole send above it — and a
+    // rejected opening is retried forever (see 4F), so the person would never get their DM at all.
+    // Tagging is the part we drop: the payload degrades to the bare kind, which parsePayload
+    // reports as untagged, and an untagged press advances every open funnel exactly as it did
+    // before tagging existed. A slightly blunter press beats a DM that never arrives.
+    expect(payload.length).toBeLessThanOrEqual(1000);
+    expect(payload).toBe("OPENING_TAP");
+    expect(parsePayload(payload).campaignId).toBeNull();
   });
 
   it("a campaign id that looks like another payload kind cannot forge a follow confirm", async () => {
@@ -223,9 +230,9 @@ describe("hostile text: keywords and emails", () => {
     expect(Date.now() - started).toBeLessThan(1000);
   });
 
-  it("DEFECT: an email can carry a spreadsheet formula into the CSV export", async () => {
+  it("an email carrying a spreadsheet formula is neutralized in the CSV export", async () => {
     // extractEmail's charset is [^\s@]+, which permits a leading '=' — the character Excel and
-    // Sheets treat as the start of a formula.
+    // Sheets treat as the start of a formula. It is stored as typed; csv() defuses it on the way out.
     expect(extractEmail("=1+1@evil.com")).toBe("=1+1@evil.com");
 
     await upsertCampaign(db, campaign({ ask_email: true }), true);
@@ -238,8 +245,11 @@ describe("hostile text: keywords and emails", () => {
     const res = await handleApi(env, new Request(url, { method: "GET" }), url);
     const csv = await res.text();
     const line = csv.split("\n").find((l) => l.includes("evil.com"))!;
-    // Written raw: no quoting, no apostrophe guard. Opening this CSV runs the formula.
-    expect(line).toContain(",=1+1@evil.com,");
+    // Prefixed with an apostrophe, so Excel/Sheets/Numbers read the cell as text rather than
+    // evaluating it. The apostrophe is hidden in the displayed value, so the export still reads
+    // as the address the person typed.
+    expect(line).toContain(",'=1+1@evil.com,");
+    expect(line).not.toContain(",=1+1@evil.com,");
   });
 
   it("commas and quotes in stored values do not corrupt CSV columns", async () => {

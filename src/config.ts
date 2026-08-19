@@ -68,8 +68,26 @@ export function validateCampaign(input: unknown, index = 0): Campaign {
     verify_follow_count: Boolean(c.verify_follow_count),
     ask_email: Boolean(c.ask_email),
     reward: { type: reward.type as Campaign["reward"]["type"], value: reward.value as string },
-    copy: copy as unknown as Campaign["copy"],
+    // `copy` used to be cast wholesale, which meant a non-string optional field (from
+    // /config/import, or a row written straight into the campaigns table) reached the send path
+    // and threw. Drop anything that isn't a usable string so it falls back to the built-in default
+    // instead. Deliberately normalizing rather than rejecting: a throw here makes
+    // getActiveCampaigns skip the row, which silently takes the whole campaign off the air —
+    // a far worse outcome than one label reverting to its default.
+    copy: {
+      opening: copy.opening,
+      opening_button: optionalString(copy.opening_button),
+      follow_gate: optionalString(copy.follow_gate),
+      follow_button: optionalString(copy.follow_button),
+      email_ask: optionalString(copy.email_ask),
+      delivery: copy.delivery,
+    },
   };
+}
+
+/** Keep a copy field only if it is a non-empty string; anything else falls back to the default. */
+function optionalString(v: unknown): string | undefined {
+  return isNonEmptyString(v) ? v : undefined;
 }
 
 /** Validate a full config payload (Section 7). */

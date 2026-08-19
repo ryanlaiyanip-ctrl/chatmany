@@ -54,7 +54,19 @@ export async function pollComments(rt: Runtime, db: D1Database): Promise<void> {
         timestamp: toUnixSeconds(c.timestamp),
       };
       // Pass the campaigns we already fetched so the engine doesn't re-query per comment.
-      await rt.engine.handleComment(evt, campaigns);
+      // Isolated per comment, for the same reason pollMessages isolates per message: handleComment
+      // can throw (a rejected send, a schema mismatch, a malformed campaign), and an unguarded loop
+      // lets one poisoned comment abort the whole tick — silently starving every commenter behind
+      // it, on this tick and on every tick after, since the same comment is re-read each time.
+      // The engine only marks a comment processed once it has fully succeeded, so a comment that
+      // throws here is left unprocessed and retried cleanly on the next tick.
+      try {
+        await rt.engine.handleComment(evt, campaigns);
+      } catch (e) {
+        console.warn(
+          `[chatmany] handleComment failed for ${c.id} on ${mediaId}: ${e instanceof Error ? e.message : e}`,
+        );
+      }
     }
   }
 }
