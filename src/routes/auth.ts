@@ -82,22 +82,31 @@ export async function handleCallback(env: Env, url: URL): Promise<Response> {
       profile_picture_url: me.profile_picture_url ?? null,
     });
 
-    // In webhook mode the account must be subscribed to the app's webhooks, on top of the callback
-    // URL configured in the Meta dashboard. Do it here so connecting is the only step: forgetting
-    // it produces a verified-but-silent webhook, which is painful to diagnose. Non-fatal — the
-    // connection itself succeeded, and /admin/webhook can retry it.
+    // Subscribe the account to the app's webhooks — ALWAYS, not only when MODE is "webhook".
+    //
+    // Pushed events are processed whatever MODE says (see routes/webhook.ts); MODE governs only the
+    // cron cadence. So "polling" plus a configured callback URL is a real and desirable setup —
+    // instant delivery, with a frequent poll underneath as a safety net — and this instance runs
+    // exactly that. Gating the subscribe on MODE meant such a setup lost its subscription the next
+    // time the owner reconnected Instagram, after a token expiry or a disconnect/reconnect. Push
+    // would then stop dead, delivery would quietly drop back to poll speed, and nothing would say
+    // why: no error, no log, just slower.
+    //
+    // Subscribing when no callback URL is registered costs one API call and delivers nothing, so
+    // doing it unconditionally is safe. Non-fatal — the connection itself already succeeded, and
+    // /admin/webhook can retry and report.
     let webhookNote = "";
-    if (env.MODE === "webhook") {
+    {
       try {
         const client2 = new InstagramClient(long.accessToken, env.GRAPH_VERSION, incomingUserId);
         await client2.subscribeToWebhooks();
-        webhookNote = `<p>Webhook subscription active for <code>${escapeHtml(WEBHOOK_FIELDS)}</code>.</p>`;
+        webhookNote = `<p>Subscribed this account to <code>${escapeHtml(WEBHOOK_FIELDS)}</code> webhooks. Events arrive instantly once the callback URL is set in your Meta app; polling keeps running underneath either way.</p>`;
       } catch (e) {
         const detail = escapeHtml(e instanceof Error ? e.message : String(e));
         console.warn(`[chatmany] webhook subscribe failed: ${detail}`);
         webhookNote =
           `<p>⚠️ Connected, but subscribing this account to webhooks failed:</p><pre>${detail}</pre>` +
-          `<p>Retry from your dashboard, or POST to <code>/admin/webhook</code> with your owner token.</p>`;
+          `<p>Polling still works. To get instant delivery, retry with <code>POST /admin/webhook</code> using your owner token.</p>`;
       }
     }
 
