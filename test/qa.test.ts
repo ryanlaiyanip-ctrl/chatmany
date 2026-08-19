@@ -101,14 +101,20 @@ describe("buttons: hostile and empty labels", () => {
     expect(followBtn().title).toBe("✅ I followed");
   });
 
-  it("DEFECT: an over-long button label is sent as-is; Instagram caps titles at 20 chars", async () => {
+  it("an over-long label is trimmed to 20 chars so Instagram accepts the send", async () => {
     const long = "Tap this button right here to get your free guide now";
     await upsertCampaign(db, campaign({ copy: { ...campaign().copy, opening_button: long } }), true);
     await engine.handleComment(comment());
-    expect(openingBtn().title).toBe(long);
-    expect(openingBtn().title.length).toBeGreaterThan(20);
-    // Nothing validates this. Instagram rejects the send, which is a definitive 4xx, so the
-    // opening is retried on every poll forever — the same permanent hot loop as the other causes.
+    expect(openingBtn().title).toBe("Tap this button righ");
+    expect(openingBtn().title.length).toBe(20);
+    // Untrimmed, Instagram rejects the send definitively and the opening retries every poll
+    // forever — a permanent hot loop and a lead that never receives its DM.
+  });
+
+  it("a whitespace-only label falls back rather than sending a blank button", async () => {
+    await upsertCampaign(db, campaign({ copy: { ...campaign().copy, opening_button: "   " } }), true);
+    await engine.handleComment(comment());
+    expect(openingBtn().title).toBe("Continue");
   });
 
   it("emoji-only and quoted labels survive intact", async () => {
@@ -121,7 +127,7 @@ describe("buttons: hostile and empty labels", () => {
 describe("timing: what a commenter actually waits", () => {
   const envOf = (o: Partial<Record<string, string>>) => o as unknown as Env;
 
-  it("DEFECT: a 90s interval on a 60s cron actually polls every 120s", async () => {
+  it("a 90s interval on a 60s cron would poll every 120s — why the default is now 60", async () => {
     // The cron can only fire on the minute, and the claim needs POLL_INTERVAL_SECONDS elapsed.
     await kvSet(db, "last_poll_ts", String(now() - 60));
     expect(await claimPollSlot(db, 90)).toBe(false); // the 60s tick is refused...
@@ -136,8 +142,8 @@ describe("timing: what a commenter actually waits", () => {
     expect(await claimPollSlot(db, 60)).toBe(true);
   });
 
-  it("the shipped default resolves to polling at 90s", () => {
-    expect(pollIntervalSeconds(envOf({ MODE: "polling", POLL_INTERVAL_SECONDS: "90" }))).toBe(90);
+  it("the shipped default now polls on every cron tick", () => {
+    expect(pollIntervalSeconds(envOf({ MODE: "polling", POLL_INTERVAL_SECONDS: "60" }))).toBe(60);
   });
 
   it("webhook mode adds no delay of its own", () => {

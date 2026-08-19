@@ -42,9 +42,14 @@ GRAPH_VERSION = "v23.0"
 # DMs land up to 15 minutes late, which looks like chatmany being broken rather than a setup step
 # that is still missing. Polling works the moment you deploy and needs no Meta setup at all.
 MODE = "polling"
-# Seconds between comment/message polls in polling mode. Cron granularity is 60s; larger values
-# are honored via a last-run timestamp so we never over-poll and burn the shared rate budget.
-POLL_INTERVAL_SECONDS = "90"
+# Seconds between comment/message polls. The cron can only fire once a minute, and a tick is
+# skipped unless this many seconds have elapsed — so 90 here actually meant polling every 120s
+# (the 60s tick was refused, the next chance was 120s). 60 makes every tick count, which is the
+# fastest polling can go: worst case ~60s from comment to DM instead of ~120s.
+#
+# Truly instant needs MODE = "webhook" above — push arrives the moment someone comments, with no
+# waiting at all. Polling's floor is the cron's one-minute granularity.
+POLL_INTERVAL_SECONDS = "60"
 # Webhook mode only: how often to run a slow reconciliation poll that catches anything a webhook
 # delivery missed (Meta gives up after a few retries; a redeploy or a blip loses those leads with
 # nothing to notice it). Safe to run alongside push — the engine's idempotency ledgers mean an

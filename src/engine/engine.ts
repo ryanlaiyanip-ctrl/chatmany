@@ -48,6 +48,24 @@ const DEFAULT_FOLLOW_GATE =
   "Make sure you're following so you don't miss the next one 🙌 Not following yet? Follow, then tap below.";
 const DEFAULT_FOLLOW_BUTTON = "✅ I followed";
 
+/**
+ * Instagram caps a postback button's visible title at 20 characters and rejects the whole send if
+ * it is longer. That rejection is definitive, so the opening would be retried on every poll
+ * forever without ever succeeding — a permanent hot loop, and a lead that never gets its DM.
+ *
+ * The builder now stops you typing past the limit, but campaigns imported from config.json or
+ * saved before that check existed can still carry a long label, so trim defensively here. Losing
+ * the tail of a label is plainly better than the message never arriving.
+ */
+const MAX_BUTTON_TITLE = 20;
+
+function buttonTitle(raw: string | undefined, fallback: string): string {
+  const title = (raw ?? fallback).trim() || fallback;
+  if (title.length <= MAX_BUTTON_TITLE) return title;
+  console.warn(`[chatmany] button label "${title}" exceeds ${MAX_BUTTON_TITLE} chars; trimming so Instagram accepts the send.`);
+  return title.slice(0, MAX_BUTTON_TITLE);
+}
+
 /** Deterministic rotation through public-reply variants so it looks human. */
 function pickRotating(texts: string[], seed: string): string {
   let h = 0;
@@ -120,7 +138,7 @@ export class Engine {
   private async sendOpening(campaign: Campaign, evt: NormalizedComment): Promise<boolean> {
     const button = {
       type: "postback" as const,
-      title: campaign.copy.opening_button ?? "Continue",
+      title: buttonTitle(campaign.copy.opening_button, "Continue"),
       payload: taggedPayload(OPENING_PAYLOAD, campaign.campaign_id),
     };
     const ok = await this.trySend(
@@ -306,7 +324,7 @@ export class Engine {
   private async sendFollowGate(campaign: Campaign, igsid: string): Promise<boolean> {
     const button = {
       type: "postback" as const,
-      title: campaign.copy.follow_button ?? DEFAULT_FOLLOW_BUTTON,
+      title: buttonTitle(campaign.copy.follow_button, DEFAULT_FOLLOW_BUTTON),
       payload: taggedPayload(FOLLOW_PAYLOAD, campaign.campaign_id),
     };
     return this.trySend(

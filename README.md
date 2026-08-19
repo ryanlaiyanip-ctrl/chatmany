@@ -582,9 +582,9 @@ curl -X POST https://chatmany.abc123.workers.dev/config/import \
   --data @config.json
 ```
 
-Either way, the polling cron (every minute, checking at most every ~90 seconds) now watches that media. Comment a keyword from a **second** test account and you'll get: opening DM → (follow gate) → (email ask) → reward, per your toggles.
+Either way, the polling cron (every minute, checking every ~60 seconds) now watches that media. Comment a keyword from a **second** test account and you'll get: opening DM → (follow gate) → (email ask) → reward, per your toggles.
 
-> ✅ **Final end-to-end verification, before you consider this ready to show anyone else:** comment your keyword from the second account, wait up to ~90 seconds, and confirm the opening DM actually lands in that account's **Requests** folder (not Primary — that's expected for a first-time commenter, see the postback-button note under [How it works](#how-it-works)). Then work through the full funnel yourself (tap the button → follow-gate if enabled → email-ask if enabled → reward) and check the **Dashboard** tab shows those events incrementing in real time. If the DM never arrives, re-check the Publish step (3.6) first — an empty comments feed is the most common cause, not a config mistake in the campaign itself.
+> ✅ **Final end-to-end verification, before you consider this ready to show anyone else:** comment your keyword from the second account, wait up to ~60 seconds, and confirm the opening DM actually lands in that account's **Requests** folder (not Primary — that's expected for a first-time commenter, see the postback-button note under [How it works](#how-it-works)). Then work through the full funnel yourself (tap the button → follow-gate if enabled → email-ask if enabled → reward) and check the **Dashboard** tab shows those events incrementing in real time. If the DM never arrives, re-check the Publish step (3.6) first — an empty comments feed is the most common cause, not a config mistake in the campaign itself.
 
 ---
 
