@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { pollIntervalSeconds } from "../src/runtime";
 import type { Env } from "../src/types";
 
@@ -43,5 +44,33 @@ describe("webhook mode", () => {
   });
   it("floors at the cron granularity", () => {
     expect(pollIntervalSeconds(wh({ WEBHOOK_RECONCILE_SECONDS: "5" }))).toBe(30);
+  });
+});
+
+/**
+ * Guards the out-of-the-box experience for anyone cloning the repo.
+ *
+ * wrangler.toml is what a fresh clone deploys with. It once shipped MODE = "webhook", which needs
+ * Meta-side setup nobody has done yet at that point — so no push events arrived, the only thing
+ * running was the 15-minute reconciliation sweep, and every DM looked ~15 minutes late. Polling
+ * works immediately with no Meta setup, so that is what must ship.
+ */
+describe("the default config a fresh clone deploys", () => {
+  const toml = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
+  const varOf = (k: string) => toml.match(new RegExp(`^${k}\\s*=\\s*"([^"]*)"`, "m"))?.[1];
+
+  it("ships polling, not webhook", () => {
+    expect(varOf("MODE")).toBe("polling");
+  });
+
+  it("reaches someone within ~90 seconds, not minutes", () => {
+    const env = {
+      MODE: varOf("MODE"),
+      POLL_INTERVAL_SECONDS: varOf("POLL_INTERVAL_SECONDS"),
+      WEBHOOK_RECONCILE_SECONDS: varOf("WEBHOOK_RECONCILE_SECONDS"),
+    } as unknown as Env;
+    const interval = pollIntervalSeconds(env);
+    expect(interval).not.toBeNull();
+    expect(interval!).toBeLessThanOrEqual(90);
   });
 });

@@ -37,8 +37,11 @@ GRAPH_VERSION = "v23.0"
 #      subscribed to the `comments` and `messages` fields
 #   3. the ACCOUNT subscribed to the app — chatmany does this for you when you connect
 #      Instagram; check it any time with `GET /admin/webhook`
-# Switch back to "polling" at any time; nothing else needs to change.
-MODE = "webhook"
+# Until all three are done, LEAVE THIS AS "polling". Setting it to "webhook" early means no push
+# events ever arrive and the only thing still running is the slow reconciliation sweep below — so
+# DMs land up to 15 minutes late, which looks like chatmany being broken rather than a setup step
+# that is still missing. Polling works the moment you deploy and needs no Meta setup at all.
+MODE = "polling"
 # Seconds between comment/message polls in polling mode. Cron granularity is 60s; larger values
 # are honored via a last-run timestamp so we never over-poll and burn the shared rate budget.
 POLL_INTERVAL_SECONDS = "90"
