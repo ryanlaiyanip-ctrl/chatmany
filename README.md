@@ -73,14 +73,19 @@ Start by telling me what I need to have ready before we begin.
 
 ## Setup
 
-**Read this first.** Setup takes about 45 minutes. It has four parts, and **they must be done in this order**, because Part 3 needs a web address that doesn't exist until Part 2 creates it:
+> **Already have chatmany running?** Don't work through this again — see
+> **[Updating an existing install](#updating-an-existing-install)**. It takes about five minutes.
+
+**Read this first.** Setup takes about 45 minutes. It has six parts, and **they must be done in this order**, because Part 3 needs a web address that doesn't exist until Part 2 creates it:
 
 | Part | What you do | Where |
 |---|---|---|
 | **1** | Create a Meta app and copy two values out of it | Meta's website |
 | **2** | Put chatmany online, get your web address | Your computer's terminal |
-| **3** | Give that address back to Meta, then Publish | Meta's website |
+| **3** | Give that address back to Meta, turn on instant delivery, then Publish | Meta's website |
 | **4** | Connect your Instagram account | Your browser |
+| **5** | Build your first campaign | Your chatmany dashboard |
+| **6** | Confirm instant delivery is on | Your computer's terminal |
 
 You do not need to know how to code. Every terminal command is written out to copy and paste.
 
@@ -692,6 +697,95 @@ than DMed twice.
 
 Switching to `MODE = "webhook"` makes nothing faster. It only makes that safety net 15× slower — if
 push ever breaks, you'd wait 15 minutes to find out instead of 60 seconds.
+
+---
+
+## Updating an existing install
+
+Already running chatmany and want the newest version? You do **not** need to redo Setup. This takes
+about five minutes.
+
+> ### ⚠️ The one rule: database first, deploy second.
+>
+> A new version can expect a database column your database doesn't have yet. Deploy before you
+> migrate and the failure is nasty and silent: a new commenter still gets their opening DM, but the
+> record of them is never written — so when they tap the button, nothing happens, forever, and
+> nothing shows an error. Migrating first is always safe, because the running version simply
+> ignores anything new. **Never do these two steps the other way round.**
+
+### Step 1 — Write down the values you changed
+
+Setup had you edit exactly two lines in `wrangler.toml`. Print them:
+
+```bash
+grep -E '^database_id|^REDIRECT_URI' wrangler.toml
+```
+
+Copy both lines into your note. You'll paste them back in Step 2.
+
+> If you also changed `MODE` or `POLL_INTERVAL_SECONDS`, note those too — though if you changed
+> `MODE` to `"webhook"`, take this as your chance to put it back to `"polling"`, and read
+> [Part 6.3](#63--do-not-change-mode) for why.
+
+### Step 2 — Get the new code
+
+Your copy of `wrangler.toml` differs from the new one, so git will refuse to merge them. Since you
+saved both values in Step 1, the simplest thing is to take the new file and re-paste them:
+
+```bash
+git checkout -- wrangler.toml
+git pull
+npm install
+```
+
+Now open `wrangler.toml` and put your two lines back — same as steps 2.5 and 3.1, using the values
+from your note. Everything else in the file is meant to be the new version.
+
+> **Nothing else you own lives in the repo.** Your secrets are stored in Cloudflare, and your
+> campaigns and contacts are in the database. Pulling new code touches neither.
+
+### Step 3 — Update the database
+
+```bash
+npm run db:migrate:remote
+```
+
+It prints which migrations it applied, or says there was nothing to do. Either is fine — what
+matters is that it ran without an error before you go to Step 4.
+
+**Nobody mid-funnel is disturbed by this.** Existing conversations keep their place, and buttons
+already sitting in people's inboxes keep working after the update.
+
+### Step 4 — Deploy
+
+```bash
+npm run deploy
+```
+
+### Step 5 — Check it worked
+
+```bash
+curl https://chatmany.abc123.workers.dev/health
+```
+
+Should print `{"ok":true,"mode":"polling"}` — use your own address.
+
+Then confirm push is still wired up, which also tells you whether delivery is instant:
+
+```bash
+curl -s -H "Authorization: Bearer YOUR_OWNER_TOKEN" https://chatmany.abc123.workers.dev/admin/webhook
+```
+
+Want `"subscribed": true`. If it's `false`, or the whole thing 404s, see
+[Part 6](#part-6--confirm-instant-delivery-is-on).
+
+### If you installed before instant delivery existed
+
+Older installs were polling-only, so DMs took up to a minute. Nothing about updating turns that on
+by itself — push needs a callback URL registered with Meta, which is a one-time job in their
+dashboard. Do [step 2.7's `WEBHOOK_VERIFY_TOKEN`](#27--set-your-four-secret-values) and
+[step 3.5](#35--turn-on-instant-delivery), then [Part 6](#part-6--confirm-instant-delivery-is-on)
+to confirm. Five minutes, and DMs land in a second or two instead of up to sixty.
 
 ---
 
