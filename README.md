@@ -705,6 +705,64 @@ push ever breaks, you'd wait 15 minutes to find out instead of 60 seconds.
 Already running chatmany and want the newest version? You do **not** need to redo Setup. This takes
 about five minutes.
 
+### 🤖 Want an AI to do it for you?
+
+Open **ChatGPT** — or **Codex**, if you'd rather it run the commands — and paste the block below.
+It knows the two things that go wrong.
+
+**Copy everything between the lines:**
+
+---
+
+```text
+I already have "chatmany" installed and running — a self-hosted Instagram
+comment-to-DM tool on my own Cloudflare account. I want to update it to the
+latest version. I am not a programmer.
+
+The update guide is the "Updating an existing install" section of this README:
+https://github.com/ryanlaiyanip-ctrl/chatmany
+
+Please read that section first, then walk me through it ONE STEP AT A TIME,
+waiting for me to confirm each step worked before giving me the next. If I
+paste an error, diagnose it and give me the fix.
+
+Four things matter, and two of them will bite us if you get them wrong:
+
+1. DATABASE FIRST, DEPLOY SECOND. Run the database migration and confirm it
+   succeeded BEFORE deploying the new code. Never the other way round. If new
+   code runs against an un-migrated database, the failure is silent and
+   expensive: someone who comments still receives their opening DM, but no
+   record of them is written, so when they tap the button nothing happens,
+   ever, and no error appears anywhere. Migrating first is always safe,
+   because the currently running version ignores anything new.
+
+2. `git pull` WILL refuse to merge, for everyone. Setup had me edit two lines
+   in wrangler.toml (database_id and REDIRECT_URI), so my copy always differs
+   from the new one. Do NOT try to teach me git conflict resolution. Instead:
+   print those two lines first so I can save them, discard my copy of that one
+   file, pull, then have me paste the two values back in. That is what the
+   guide says to do.
+
+3. Do NOT change MODE in wrangler.toml. Leave it as "polling". It sounds like
+   the switch for instant delivery and it is not — it only sets how often the
+   backup poll runs. Setting it to "webhook" makes things SLOWER, not faster.
+   Instant delivery comes from registering a webhook callback URL with Meta.
+
+4. Updating touches only the code. My secrets live in Cloudflare and my
+   campaigns and contacts live in the database — do not tell me to re-enter
+   secrets or rebuild campaigns, and do not tell me to delete or recreate the
+   database. People part-way through a funnel keep their place.
+
+At the end, help me confirm it worked, and check whether instant delivery is
+switched on for my install. If it is not, offer to walk me through turning it
+on — it is a one-time job in the Meta dashboard and takes about five minutes.
+
+Start by asking me to confirm chatmany is currently working, and to have my
+Cloudflare login and my chatmany folder ready.
+```
+
+---
+
 > ### ⚠️ The one rule: database first, deploy second.
 >
 > A new version can expect a database column your database doesn't have yet. Deploy before you
