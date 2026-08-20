@@ -1,4 +1,6 @@
 node_modules/
+# ...and as a bare symlink, which "node_modules/" does not match (git worktrees use one).
+node_modules
 .wrangler/
 dist/
 .dev.vars
@@ -14,3 +16,8 @@ HANDOFF_SESSION_*.md
 
 # Real production values for the maintainer's own instance. Never publish.
 wrangler.prod.toml
+
+# Local QA scaffolding created while validating a deploy against the live instance.
+# qa/ imports from a sibling git worktree by absolute path, so it is machine-specific.
+qa/
+wrangler.qa.toml
