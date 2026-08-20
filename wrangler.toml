@@ -29,29 +29,34 @@ binding = "ASSETS"
 [vars]
 # Public, non-secret configuration. Secrets (APP_SECRET, OWNER_TOKEN) go via `wrangler secret put`.
 GRAPH_VERSION = "v23.0"
-# "webhook" (push, near-instant) or "polling" (pull, zero extra Meta setup).
+# LEAVE THIS AS "polling". It is the default, and it is almost certainly what you want.
 #
-# Webhook mode needs three things beyond this line, or events silently never arrive:
-#   1. WEBHOOK_VERIFY_TOKEN set as a secret (`wrangler secret put WEBHOOK_VERIFY_TOKEN`)
-#   2. the callback URL https://<your-worker>/webhook registered in the Meta app dashboard,
-#      subscribed to the `comments` and `messages` fields
-#   3. the ACCOUNT subscribed to the app — chatmany does this for you when you connect
-#      Instagram; check it any time with `GET /admin/webhook`
-# Until all three are done, LEAVE THIS AS "polling". Setting it to "webhook" early means no push
-# events ever arrive and the only thing still running is the slow reconciliation sweep below — so
-# DMs land up to 15 minutes late, which looks like chatmany being broken rather than a setup step
-# that is still missing. Polling works the moment you deploy and needs no Meta setup at all.
+# MODE does NOT decide whether you get instant delivery. It sets the CRON CADENCE, nothing else:
+#   "polling"  -> the cron polls every POLL_INTERVAL_SECONDS (below)
+#   "webhook"  -> the cron drops to the much slower WEBHOOK_RECONCILE_SECONDS sweep
+#
+# Pushed webhook events are verified and processed the moment they arrive under EITHER setting.
+# So instant delivery is not something you switch on here — it comes from registering a callback
+# URL with Meta (see "Part 6 — Optional: make it instant" in the README).
+#
+# The combination you want is this one: MODE = "polling" AND a registered callback URL. Push makes
+# delivery instant; the 60-second poll sits underneath and catches anything a delivery drops.
+#
+# Setting "webhook" before push is confirmed working is the classic way to break this: no events
+# arrive, the only thing still running is the 15-minute sweep, and every DM looks ~15 minutes late
+# as if chatmany were broken. Even once push IS working, "webhook" only makes your safety net 15x
+# slower — if push ever fails you wait 15 minutes to notice instead of 60 seconds.
 MODE = "polling"
 # Seconds between comment/message polls. The cron can only fire once a minute, and a tick is
 # skipped unless this many seconds have elapsed — so 90 here actually meant polling every 120s
 # (the 60s tick was refused, the next chance was 120s). 60 makes every tick count, which is the
 # fastest polling can go: worst case ~60s from comment to DM instead of ~120s.
 #
-# Truly instant needs MODE = "webhook" above — push arrives the moment someone comments, with no
-# waiting at all. Polling's floor is the cron's one-minute granularity.
+# 60s is polling's floor, and it is what a fresh install gets. For truly instant delivery, register
+# a webhook callback URL with Meta (README, Part 6) and LEAVE MODE as "polling" — do not switch it.
 POLL_INTERVAL_SECONDS = "60"
-# Webhook mode only: how often to run a slow reconciliation poll that catches anything a webhook
-# delivery missed (Meta gives up after a few retries; a redeploy or a blip loses those leads with
+# Only used when MODE = "webhook": how often to run a slow reconciliation poll that catches anything
+# a webhook delivery missed (Meta gives up after a few retries; a redeploy or a blip loses those leads with
 # nothing to notice it). Safe to run alongside push — the engine's idempotency ledgers mean an
 # already-handled comment is recognised and skipped, never re-sent. Set to "off" for pure push.
 WEBHOOK_RECONCILE_SECONDS = "900"
