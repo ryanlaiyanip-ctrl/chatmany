@@ -1,6 +1,15 @@
 # chatmany — Cloudflare Worker config
 # After cloning: `wrangler d1 create chatmany`, paste the returned database_id below,
 # then `npm run db:migrate:remote`. Secrets are set with `wrangler secret put` (see .env.example).
+#
+# ⚠️ WHEN UPDATING TO A NEWER VERSION: MIGRATE THE DATABASE BEFORE YOU DEPLOY.
+#      npm run db:migrate:remote     # first, and check it succeeded
+#      npm run deploy                # only then
+#    Never the other way round. New code can expect a column your live database does not have yet,
+#    and that failure is silent rather than loud: someone who comments still receives their opening
+#    DM, but no record of them is written, so when they tap the button nothing happens — forever,
+#    with no error anywhere. Migrating first is always safe, because the version currently running
+#    simply ignores anything new. See "Updating an existing install" in the README.
 
 name = "chatmany"
 main = "src/index.ts"
@@ -37,7 +46,7 @@ GRAPH_VERSION = "v23.0"
 #
 # Pushed webhook events are verified and processed the moment they arrive under EITHER setting.
 # So instant delivery is not something you switch on here — it comes from registering a callback
-# URL with Meta (see "Part 6 — Confirm instant delivery is on" in the README).
+# URL with Meta, which is step 3.5 of the README's setup. Part 6 is how you confirm it took.
 #
 # The combination you want is this one: MODE = "polling" AND a registered callback URL. Push makes
 # delivery instant; the 60-second poll sits underneath and catches anything a delivery drops.
@@ -52,8 +61,10 @@ MODE = "polling"
 # (the 60s tick was refused, the next chance was 120s). 60 makes every tick count, which is the
 # fastest polling can go: worst case ~60s from comment to DM instead of ~120s.
 #
-# 60s is polling's floor, and it is what a fresh install gets. For truly instant delivery, register
-# a webhook callback URL with Meta (README, Part 6) and LEAVE MODE as "polling" — do not switch it.
+# This is the SAFETY NET, not your delivery path. If you completed step 3.5 of the setup, Meta
+# pushes each comment to you and the DM goes out in a second or two; this poll only catches what a
+# push delivery drops. 60s is polling's floor — it is what you fall back to, and what you get if
+# you skipped 3.5. Either way, LEAVE MODE as "polling".
 POLL_INTERVAL_SECONDS = "60"
 # Only used when MODE = "webhook": how often to run a slow reconciliation poll that catches anything
 # a webhook delivery missed (Meta gives up after a few retries; a redeploy or a blip loses those leads with
