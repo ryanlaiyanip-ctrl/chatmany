@@ -46,13 +46,36 @@ class FakeD1 {
   }
 }
 
-/** Create an in-memory DB with every real migration applied, in order, typed as a D1Database. */
-export function makeTestDb(): D1Database {
-  const db = new DatabaseSync(":memory:");
-  const schemaDir = new URL("../../schema/", import.meta.url);
-  const files = readdirSync(schemaDir).filter((f) => f.endsWith(".sql")).sort();
-  for (const f of files) {
-    db.exec(readFileSync(new URL(f, schemaDir), "utf8"));
+/**
+ * Create an in-memory DB with the real migrations applied, in order, typed as a D1Database.
+ *
+ * `upTo` stops after the named migration, so a test can build a database that looks like a
+ * deployment which has not been migrated yet — that is the only way to test what happens when new
+ * code meets an older schema, which is the failure mode a deploy actually risks.
+ */
+export function makeTestDb(upTo?: string): D1Database {
+  return makeTestDbWithHandle(upTo).db;
+}
+
+/** As makeTestDb, but also returns the raw handle so a test can apply a migration mid-flight. */
+export function makeTestDbWithHandle(upTo?: string): { db: D1Database; raw: DatabaseSyncType } {
+  const raw = new DatabaseSync(":memory:");
+  for (const f of migrationFiles()) {
+    raw.exec(readFileSync(new URL(f, schemaDir()), "utf8"));
+    if (upTo && f.startsWith(upTo)) break;
   }
-  return new FakeD1(db) as unknown as D1Database;
+  return { db: new FakeD1(raw) as unknown as D1Database, raw };
+}
+
+/** Apply one migration by filename to an existing handle (simulates `d1 migrations apply`). */
+export function applyMigration(raw: DatabaseSyncType, file: string): void {
+  raw.exec(readFileSync(new URL(file, schemaDir()), "utf8"));
+}
+
+export function migrationFiles(): string[] {
+  return readdirSync(schemaDir()).filter((f) => f.endsWith(".sql")).sort();
+}
+
+function schemaDir(): URL {
+  return new URL("../../schema/", import.meta.url);
 }
