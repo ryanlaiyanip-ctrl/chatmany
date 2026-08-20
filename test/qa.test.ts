@@ -58,20 +58,44 @@ describe("buttons: identical labels on both steps", () => {
 });
 
 describe("buttons: pressing the wrong one", () => {
-  it("DEFECT: re-pressing the opening button at the follow gate does nothing at all", async () => {
+  it("re-pressing the opening button at the follow gate re-sends the gate, capped at 2", async () => {
     await upsertCampaign(db, campaign({ check_follow: true }), true);
     await engine.handleComment(comment());
     const opening = openingBtn().payload;
     await engine.handleMessage(msg({ payload: opening, timestamp: T + 10 }));
     expect((await getConversation(db, "u1", "c1"))?.state).toBe("AWAITING_FOLLOW");
+    expect(client.calls.button).toHaveLength(1); // the gate itself
 
-    // The opening button is a button template: it stays in the transcript forever. Scrolling up
-    // and pressing it again is easy, and now MORE likely than with the old vanishing chips.
-    const before = client.calls.button.length + client.calls.text.length;
+    // The opening button is a button template: it stays in the transcript forever, so scrolling up
+    // and pressing it again is easy — more likely than with the old vanishing chips. That used to
+    // be answered with total silence. Now the gate is re-sent, so the right button is back at the
+    // bottom of the thread.
     await engine.handleMessage(msg({ payload: opening, timestamp: T + 20 }));
+    expect(client.calls.button).toHaveLength(2);
+    await engine.handleMessage(msg({ payload: opening, timestamp: T + 30 }));
+    expect(client.calls.button).toHaveLength(3);
+
+    // Capped: an uncapped DM-per-press loop is what platform spam detection watches for.
+    await engine.handleMessage(msg({ payload: opening, timestamp: T + 40 }));
+    await engine.handleMessage(msg({ payload: opening, timestamp: T + 50 }));
+    expect(client.calls.button).toHaveLength(3);
+
+    // The cap only stops the re-sends. They are still at the gate, and still able to finish.
     expect((await getConversation(db, "u1", "c1"))?.state).toBe("AWAITING_FOLLOW");
-    expect(client.calls.button.length + client.calls.text.length).toBe(before);
-    // They pressed a real button of ours and got total silence. No nudge, no re-send.
+    await engine.handleMessage(msg({ payload: "FOLLOW_CONFIRM:c1", timestamp: T + 60 }));
+    expect((await getConversation(db, "u1", "c1"))?.state).toBe("DONE");
+  });
+
+  it("a foreign button pressed at the gate is still ignored entirely", async () => {
+    await upsertCampaign(db, campaign({ check_follow: true }), true);
+    await engine.handleComment(comment());
+    await engine.handleMessage(msg({ payload: openingBtn().payload, timestamp: T + 10 }));
+    expect(client.calls.button).toHaveLength(1);
+
+    // Only OUR opening button earns a re-send. Some other app's postback must not provoke a DM.
+    await engine.handleMessage(msg({ payload: "SOMETHING_ELSE", timestamp: T + 20 }));
+    expect(client.calls.button).toHaveLength(1);
+    expect((await getConversation(db, "u1", "c1"))?.state).toBe("AWAITING_FOLLOW");
   });
 
   it("pressing the follow button early (still awaiting tap) advances rather than stalling", async () => {
@@ -81,14 +105,40 @@ describe("buttons: pressing the wrong one", () => {
     expect((await getConversation(db, "u1", "c1"))?.state).toBe("AWAITING_FOLLOW");
   });
 
-  it("pressing the same button twice never double-sends", async () => {
+  it("ONE press re-delivered several times still sends the gate exactly once", async () => {
+    await upsertCampaign(db, campaign({ check_follow: true }), true);
+    await engine.handleComment(comment());
+    const p = openingBtn().payload;
+
+    // Model the real timeline. The opening went out a minute ago; the press happens NOW. That
+    // ordering matters: the engine skips any message at or before a conversation's updated_at, and
+    // updated_at is stamped with the wall clock at the moment we act — which, for a real event, is
+    // always at or after the event's own timestamp. Backdating the row is what a real minute of
+    // elapsed time does; without it every timestamp in a fast test collapses into the same second.
+    await db.prepare("UPDATE conversations SET updated_at = ? WHERE igsid = ?").bind(now() - 60, "u1").run();
+
+    // One press, delivered three times: Meta retries a delivery it thinks failed, and the
+    // reconciliation poll re-reads the same message underneath. All three carry the SAME timestamp,
+    // which is what separates a re-delivery from three real presses.
+    const pressedAt = now();
+    await engine.handleMessage(msg({ payload: p, timestamp: pressedAt }));
+    await engine.handleMessage(msg({ payload: p, timestamp: pressedAt }));
+    await engine.handleMessage(msg({ payload: p, timestamp: pressedAt }));
+    expect(client.calls.button).toHaveLength(1);
+    expect((await getConversation(db, "u1", "c1"))?.state).toBe("AWAITING_FOLLOW");
+  });
+
+  it("even if a re-delivery did slip the timestamp guard, the cap bounds it to 2 extra DMs", async () => {
+    // The guard above rests on the worker's clock being at or ahead of the event timestamp, which
+    // holds for Meta's timestamps. This is the backstop if it ever doesn't: the re-send counter is
+    // per-person and persisted, so a pathological stream of re-deliveries still cannot become an
+    // unbounded DM loop.
     await upsertCampaign(db, campaign({ check_follow: true }), true);
     await engine.handleComment(comment());
     const p = openingBtn().payload;
     await engine.handleMessage(msg({ payload: p, timestamp: T + 10 }));
-    await engine.handleMessage(msg({ payload: p, timestamp: T + 11 }));
-    await engine.handleMessage(msg({ payload: p, timestamp: T + 12 }));
-    expect(client.calls.button).toHaveLength(1);
+    for (let i = 0; i < 25; i++) await engine.handleMessage(msg({ payload: p, timestamp: T + 20 + i }));
+    expect(client.calls.button).toHaveLength(3); // the gate + at most 2 re-sends, never more
   });
 });
 

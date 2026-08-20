@@ -5,6 +5,7 @@ import { buildAuthorizeUrl, exchangeCodeForShortLivedToken, exchangeForLongLived
 import { InstagramClient, WEBHOOK_FIELDS } from "../api/client";
 import { clearAuth, getAuth, kvGet, kvSet, now, saveAuth } from "../db";
 import { getPollAgeSeconds, getPollError } from "../poller/messagePoll";
+import { getCommentPollError } from "../poller/commentPoll";
 import type { Env } from "../types";
 import { json, redirect, html } from "./http";
 
@@ -131,6 +132,7 @@ export async function handleStatus(env: Env): Promise<Response> {
   // means the poller is not completing.
   const pollAge = await getPollAgeSeconds(env.DB);
   const pollError = await getPollError(env.DB);
+  const commentPollError = await getCommentPollError(env.DB);
   return json({
     connected: true,
     username: auth.username,
@@ -140,8 +142,9 @@ export async function handleStatus(env: Env): Promise<Response> {
     expires_at: auth.expires_at,
     expires_in_days: Math.max(0, Math.round((auth.expires_at - now()) / 86400)),
     poll_age_seconds: pollAge,
-    poll_healthy: pollAge !== null && pollAge < 600,
+    poll_healthy: pollAge !== null && pollAge < 600 && !commentPollError,
     poll_error: pollError,
+    comment_poll_error: commentPollError,
   });
 }
 

@@ -196,7 +196,9 @@ export interface ConversationRow {
   username: string | null;
   email: string | null;
   followed: number;
-  /** @deprecated Counter for the removed verify_follow_count mode; nothing writes it. */
+  /** How many times we have re-sent the follow gate to someone who pressed the wrong button.
+   *  Capped - see engine.resendFollowGate. (Column predates this use; it was the verify_follow_count
+   *  counter, which was removed. Reusing it means no new migration.) */
   follow_retries: number;
   /** How many times we have re-asked for their email. Capped — see engine.resendEmailAsk. */
   email_retries: number;
@@ -249,7 +251,7 @@ export async function updateConversation(
   db: D1Database,
   igsid: string,
   campaignId: string,
-  patch: Partial<Pick<ConversationRow, "state" | "email" | "followed" | "email_retries">>,
+  patch: Partial<Pick<ConversationRow, "state" | "email" | "followed" | "email_retries" | "follow_retries">>,
 ): Promise<void> {
   const sets: string[] = [];
   const binds: unknown[] = [];
@@ -268,6 +270,10 @@ export async function updateConversation(
   if (patch.email_retries !== undefined) {
     sets.push("email_retries = ?");
     binds.push(patch.email_retries);
+  }
+  if (patch.follow_retries !== undefined) {
+    sets.push("follow_retries = ?");
+    binds.push(patch.follow_retries);
   }
   if (sets.length === 0) return;
   sets.push("updated_at = ?");

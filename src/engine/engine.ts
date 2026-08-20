@@ -21,6 +21,7 @@ import {
   afterTap,
   confirmsFollow,
   emailReasksExhausted,
+  followGateReasksExhausted,
   parsePayload,
   taggedPayload,
 } from "./transitions";
@@ -59,11 +60,35 @@ const DEFAULT_FOLLOW_BUTTON = "✅ I followed";
  */
 const MAX_BUTTON_TITLE = 20;
 
-function buttonTitle(raw: string | undefined, fallback: string): string {
-  const title = (raw ?? fallback).trim() || fallback;
+/**
+ * `raw` is typed as a string, but campaigns arriving through /config/import or written straight
+ * into the campaigns table are not guaranteed to honour that — and a non-string here used to throw
+ * TypeError on .trim(), which (see pollComments) aborted the whole tick for everyone behind it.
+ * Anything that isn't a usable string falls back to the default label instead.
+ */
+function buttonTitle(raw: unknown, fallback: string): string {
+  const candidate = typeof raw === "string" ? raw.trim() : "";
+  const title = candidate || fallback;
   if (title.length <= MAX_BUTTON_TITLE) return title;
   console.warn(`[chatmany] button label "${title}" exceeds ${MAX_BUTTON_TITLE} chars; trimming so Instagram accepts the send.`);
-  return title.slice(0, MAX_BUTTON_TITLE);
+  return trimToLength(title, MAX_BUTTON_TITLE);
+}
+
+/**
+ * Trim to at most `max` UTF-16 units WITHOUT splitting a character.
+ *
+ * A plain .slice() counts UTF-16 units, so it happily cuts an emoji's surrogate pair in half —
+ * "xxxxxxxxxxxxxxxxxxx🙌".slice(0, 20) ends in a lone \ud83d, which is not valid text and is not
+ * something to hand to Instagram. Iterating the string yields whole code points, so we only ever
+ * stop on a character boundary.
+ */
+function trimToLength(s: string, max: number): string {
+  let out = "";
+  for (const ch of s) {
+    if (out.length + ch.length > max) break;
+    out += ch;
+  }
+  return out;
 }
 
 /** Deterministic rotation through public-reply variants so it looks human. */
@@ -185,7 +210,7 @@ export class Engine {
           await this.onTap(campaign, evt);
           break;
         case "AWAITING_FOLLOW":
-          await this.onFollow(campaign, evt);
+          await this.onFollow(campaign, evt, convo.follow_retries);
           break;
         case "AWAITING_EMAIL":
           await this.onEmail(campaign, evt, convo.email_retries);
@@ -203,13 +228,57 @@ export class Engine {
     await this.enterState(campaign, evt.igsid, afterTap(campaign), { entryEvent: "button_clicked" });
   }
 
-  private async onFollow(campaign: Campaign, evt: NormalizedMessage): Promise<void> {
-    if (!confirmsFollow(evt)) return; // a different button's postback; stay in AWAITING_FOLLOW
+  private async onFollow(campaign: Campaign, evt: NormalizedMessage, gateReasks: number): Promise<void> {
+    if (!confirmsFollow(evt)) {
+      // Not the gate button. If it was OUR opening button — a button template, so it sits in the
+      // transcript forever and is easy to scroll up and re-press — put the gate back at the bottom
+      // of the thread rather than answering a deliberate press with silence. Any other button's
+      // payload is someone else's event and must not cross-advance, so it stays ignored.
+      const { kind } = parsePayload(evt.payload);
+      if (kind === OPENING_PAYLOAD) await this.resendFollowGate(campaign, evt.igsid, gateReasks);
+      return; // either way, stay in AWAITING_FOLLOW
+    }
 
     await this.enterState(campaign, evt.igsid, afterFollow(campaign), {
       entryEvent: "follow_confirmed",
       patch: { followed: 1 },
     });
+  }
+
+  /**
+   * Re-send the follow gate to someone who pressed the wrong button, capped.
+   *
+   * Deliberately claim-free (like resendEmailAsk): the first gate's send claim is still held, so
+   * reusing sendFollowGate here would be skipped as "already attempted" and send nothing at all.
+   * The counter is only bumped once the re-send actually goes out, so a failed send retries
+   * cleanly instead of silently spending one of the two allowed nudges.
+   */
+  private async resendFollowGate(campaign: Campaign, igsid: string, reasks: number): Promise<void> {
+    if (followGateReasksExhausted(reasks)) {
+      console.warn(`[chatmany] follow-gate re-send cap reached for ${igsid} on ${campaign.campaign_id}; staying quiet.`);
+      return;
+    }
+    const button = {
+      type: "postback" as const,
+      title: buttonTitle(campaign.copy.follow_button, DEFAULT_FOLLOW_BUTTON),
+      payload: taggedPayload(FOLLOW_PAYLOAD, campaign.campaign_id),
+    };
+    // Claimed on the counter's CURRENT value, so two presses arriving at once contend for the same
+    // key and exactly one of them sends. Without this both read reasks=0, both send, and both write
+    // 1 — the cap still terminates, but it lets through roughly one extra DM per concurrent press,
+    // which defeats the point of having a cap. The key advances with the counter, so the second
+    // (legitimate) nudge is not blocked by the first one's claim.
+    const ok = await this.trySend(
+      () => this.client.sendButtonTemplate({ igsid }, campaign.copy.follow_gate ?? DEFAULT_FOLLOW_GATE, [button]),
+      "follow_gate_resend",
+      `follow_gate_resend:${campaign.campaign_id}:${igsid}:${reasks}`,
+    );
+    if (ok) {
+      await updateConversation(this.db, igsid, campaign.campaign_id, {
+        state: "AWAITING_FOLLOW",
+        follow_retries: reasks + 1,
+      });
+    }
   }
 
   private async onEmail(campaign: Campaign, evt: NormalizedMessage, reasks: number): Promise<void> {
@@ -247,6 +316,9 @@ export class Engine {
           [{ content_type: "user_email" }],
         ),
       "email_ask_resend",
+      // Same reasoning as the follow-gate re-send: claimed on the counter's current value, so
+      // concurrent replies contend for one key instead of each sending their own nudge.
+      `email_ask_resend:${campaign.campaign_id}:${igsid}:${reasks}`,
     );
     // Only mark the invalid-reply message as handled once the re-ask actually sent — same
     // fail-clean pattern as every other send: a failed resend leaves updated_at untouched so the

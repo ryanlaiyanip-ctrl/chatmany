@@ -15,6 +15,8 @@ import {
   upsertCampaign,
 } from "../db";
 import { buildRuntime } from "../runtime";
+import { getPollAgeSeconds, getPollError } from "../poller/messagePoll";
+import { getCommentPollError } from "../poller/commentPoll";
 import type { Env } from "../types";
 import { json } from "./http";
 
@@ -46,6 +48,12 @@ export async function handleApi(env: Env, req: Request, url: URL): Promise<Respo
 async function statusResponse(env: Env): Promise<Response> {
   const auth = await getAuth(env.DB);
   if (!auth) return json({ connected: false });
+  // Poll health belongs HERE, not only on /auth/status: this is the endpoint the dashboard calls.
+  // The signal added after the 2026-08-09 stall went onto /auth/status, which nothing in the UI
+  // ever requests — so the one thing built to make a frozen poller visible was itself invisible.
+  const pollAge = await getPollAgeSeconds(env.DB);
+  const pollError = await getPollError(env.DB);
+  const commentPollError = await getCommentPollError(env.DB);
   return json({
     connected: true,
     username: auth.username,
@@ -55,6 +63,12 @@ async function statusResponse(env: Env): Promise<Response> {
     expires_at: auth.expires_at,
     expires_in_days: Math.max(0, Math.round((auth.expires_at - now()) / 86400)),
     token_expired: auth.expires_at <= now(),
+    // A healthy message poll refreshes its cursor every tick, so anything past a few minutes means
+    // the poller is not completing. null means it has never run.
+    poll_age_seconds: pollAge,
+    poll_healthy: pollAge !== null && pollAge < 600 && !commentPollError,
+    poll_error: pollError,
+    comment_poll_error: commentPollError,
   });
 }
 
@@ -200,7 +214,12 @@ async function contactsCsv(env: Env, url: URL): Promise<Response> {
 }
 
 function csv(v: string): string {
-  return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+  // Neutralize spreadsheet formulas before quoting. Excel, Sheets and Numbers all evaluate a cell
+  // whose first character is = + - or @, so a contact who types `=cmd|'/c calc'!A1@x.com` as their
+  // email becomes a live formula in the owner's own export. A leading apostrophe forces the cell to
+  // be read as text; Excel and Sheets both hide it in the displayed value.
+  const safe = /^[=+\-@]/.test(v) ? `'${v}` : v;
+  return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
 async function safeJson(req: Request): Promise<Record<string, unknown>> {
