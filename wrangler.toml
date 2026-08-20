@@ -37,7 +37,7 @@ GRAPH_VERSION = "v23.0"
 #
 # Pushed webhook events are verified and processed the moment they arrive under EITHER setting.
 # So instant delivery is not something you switch on here — it comes from registering a callback
-# URL with Meta (see "Part 6 — Optional: make it instant" in the README).
+# URL with Meta (see "Part 6 — Confirm instant delivery is on" in the README).
 #
 # The combination you want is this one: MODE = "polling" AND a registered callback URL. Push makes
 # delivery instant; the 60-second poll sits underneath and catches anything a delivery drops.
