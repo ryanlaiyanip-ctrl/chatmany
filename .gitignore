@@ -15,7 +15,10 @@ HANDOFF.md
 HANDOFF_SESSION_*.md
 
 # Real production values for the maintainer's own instance. Never publish.
-wrangler.prod.toml
+# Glob, not the exact name: an editor backup or a dated copy of this file holds the same real
+# database id and worker URL, and `wrangler.prod.toml` alone would leave those untracked-but-
+# addable, one `git add -A` away from a public repo.
+wrangler.prod.toml*
 
 # Local QA scaffolding created while validating a deploy against the live instance.
 # qa/ imports from a sibling git worktree by absolute path, so it is machine-specific.
