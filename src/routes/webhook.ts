@@ -40,7 +40,41 @@ export async function handleWebhookAdmin(env: Env, method: string): Promise<Resp
   try {
     if (method === "POST") {
       await rt.client.subscribeToWebhooks();
-      return json({ ok: true, subscribed_fields: WEBHOOK_FIELDS, mode: env.MODE });
+
+      // Read the subscription back rather than echoing what we just asked for. Reporting our own
+      // input made this endpoint claim success whatever actually happened — which is worse than
+      // useless here, because a partial subscription is silent by nature: subscribed to `messages`
+      // but not `comments` means button taps arrive instantly while new comments fall back to the
+      // poll, so the funnel still works and only feels inexplicably slow at the first step.
+      let actual: string[] | null = null;
+      try {
+        actual = (await rt.client.getWebhookSubscriptions()).flatMap((s) => s.subscribed_fields ?? []);
+      } catch (e) {
+        // The subscribe itself succeeded; only the confirmation failed. Say exactly that rather
+        // than failing the whole call and implying nothing happened.
+        return json({
+          ok: true,
+          confirmed: false,
+          requested: WEBHOOK_FIELDS,
+          mode: env.MODE,
+          note: `Subscribed, but reading the subscription back failed (${e instanceof Error ? e.message : e}). Re-check with GET /admin/webhook.`,
+        });
+      }
+
+      const missing = WEBHOOK_FIELDS.split(",").filter((f) => !actual!.includes(f));
+      return json({
+        ok: missing.length === 0,
+        confirmed: true,
+        requested: WEBHOOK_FIELDS,
+        subscribed_fields: actual,
+        missing,
+        mode: env.MODE,
+        ...(missing.length > 0
+          ? {
+              note: `Still missing: ${missing.join(", ")}. The account is subscribed, so this is the APP-level config — open your Meta app dashboard, Webhooks -> Instagram, and tick ${missing.join(" and ")} there too. Account and app subscriptions are separate, and a field has to be in both.`,
+            }
+          : {}),
+      });
     }
     const subs = await rt.client.getWebhookSubscriptions();
     return json({

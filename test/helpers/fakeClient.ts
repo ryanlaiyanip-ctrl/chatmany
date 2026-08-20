@@ -81,6 +81,26 @@ export class FakeClient {
     this.guardAfter("text");
     return { message_id: "m" };
   }
+  // ---- webhook subscription (admin route) ----
+  /** What Meta currently reports for this account. Tests set this to model a partial subscription. */
+  subscribedFields: string[] = [];
+  /** Fields the next subscribeToWebhooks call will actually persist — defaults to all requested. */
+  acceptFields: string[] | null = null;
+  subscribeCalls = 0;
+  /** Make the read-back throw, to exercise the "subscribed but unconfirmed" path. */
+  failReadBack = false;
+
+  async subscribeToWebhooks(fields = "comments,messages") {
+    this.subscribeCalls++;
+    const requested = fields.split(",");
+    this.subscribedFields = this.acceptFields ?? requested;
+    return { success: true };
+  }
+  async getWebhookSubscriptions() {
+    if (this.failReadBack) throw new Error("graph unreachable");
+    return this.subscribedFields.length ? [{ subscribed_fields: [...this.subscribedFields] }] : [];
+  }
+
   asClient(): InstagramClient {
     return this as unknown as InstagramClient;
   }

@@ -22,7 +22,7 @@ vi.mock("../src/runtime", async (orig) => {
   return { ...actual, buildRuntime: vi.fn(async () => runtime) };
 });
 
-const { handleWebhookEvent, handleWebhookVerify } = await import("../src/routes/webhook");
+const { handleWebhookEvent, handleWebhookVerify, handleWebhookAdmin } = await import("../src/routes/webhook");
 
 const APP_SECRET = "test-app-secret";
 const T = Math.floor(Date.now() / 1000);
@@ -167,5 +167,50 @@ describe("subscription handshake", () => {
     expect(await ok.text()).toBe("42");
     const bad = handleWebhookVerify(env, new URL("https://x/webhook?hub.mode=subscribe&hub.verify_token=nope&hub.challenge=42"));
     expect(bad.status).toBe(403);
+  });
+});
+
+describe("POST /admin/webhook reports what Meta actually stored", () => {
+  async function adminEnv() {
+    const db = makeTestDb();
+    client = new FakeClient();
+    runtime = { client, igUserId: "me" };
+    return { DB: db, MODE: "polling", APP_SECRET } as unknown as Env;
+  }
+
+  it("confirms success by reading the subscription back, not by echoing its own input", async () => {
+    const env = await adminEnv();
+    const res = await handleWebhookAdmin(env, "POST");
+    const body = await res.json() as Record<string, unknown>;
+    expect(client.subscribeCalls).toBe(1);
+    expect(body).toMatchObject({ ok: true, confirmed: true, subscribed_fields: ["comments", "messages"], missing: [] });
+  });
+
+  it("REGRESSION GUARD: a subscribe that silently persists only `messages` is reported, not celebrated", async () => {
+    const env = await adminEnv();
+    // Exactly the state this account was found in: taps push instantly, new comments do not.
+    client.acceptFields = ["messages"];
+    const res = await handleWebhookAdmin(env, "POST");
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.ok).toBe(false);                       // the old version returned ok:true here
+    expect(body.subscribed_fields).toEqual(["messages"]);
+    expect(body.missing).toEqual(["comments"]);
+    expect(String(body.note)).toContain("Meta app dashboard");
+  });
+
+  it("a failed read-back still says the subscribe succeeded, rather than implying nothing happened", async () => {
+    const env = await adminEnv();
+    client.failReadBack = true;
+    const res = await handleWebhookAdmin(env, "POST");
+    const body = await res.json() as Record<string, unknown>;
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ ok: true, confirmed: false });
+    expect(client.subscribeCalls).toBe(1);
+  });
+
+  it("GET reports subscribed:false when the account has no subscription at all", async () => {
+    const env = await adminEnv();
+    const res = await handleWebhookAdmin(env, "GET");
+    expect(await res.json()).toMatchObject({ subscribed: false, subscriptions: [] });
   });
 });
