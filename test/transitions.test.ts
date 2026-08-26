@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   FOLLOW_PAYLOAD,
+  OPENING_PAYLOAD,
   afterFollow,
   afterTap,
   confirmsFollow,
+  confirmsTap,
   emailReasksExhausted,
   parsePayload,
   taggedPayload,
+  tapReasksExhausted,
 } from "../src/engine/transitions";
 import type { Campaign } from "../src/types";
 
@@ -81,12 +84,43 @@ describe("follow-gate confirmation", () => {
   it("rejects a different button's payload so events don't cross-advance", () => {
     expect(confirmsFollow({ payload: "SOME_OTHER_BUTTON" })).toBe(false);
   });
-  it("accepts a payload-less message — polling never surfaces the postback payload", () => {
-    expect(confirmsFollow({ text: "done!" })).toBe(true);
-    expect(confirmsFollow({})).toBe(true);
+  // These two used to assert the opposite. The lenient fallback was written for polling, which
+  // never surfaces a payload — but with a webhook callback registered a real press ALWAYS carries
+  // one and a typed message never does, so "no payload" stopped meaning "might be a press" and
+  // started meaning "definitely typed". Accepting those handed the reward to people who never
+  // pressed anything and never followed anybody.
+  it("rejects a payload-less message — typing is not pressing", () => {
+    expect(confirmsFollow({ text: "done!" })).toBe(false);
+    expect(confirmsFollow({})).toBe(false);
   });
-  it("accepts a typed reply that the old exact-title rule would have ignored", () => {
-    // "i followed" without the emoji left people stuck in AWAITING_FOLLOW before.
-    expect(confirmsFollow({ text: "i followed" })).toBe(true);
+  it("rejects a typed reply even when it reads like a confirmation", () => {
+    expect(confirmsFollow({ text: "i followed" })).toBe(false);
+    expect(confirmsFollow({ text: "✅ I followed" })).toBe(false);
+  });
+});
+
+describe("opening-tap confirmation", () => {
+  it("accepts our own opening payload, tagged with the campaign", () => {
+    expect(confirmsTap({ payload: OPENING_PAYLOAD })).toBe(true);
+    expect(confirmsTap({ payload: `${OPENING_PAYLOAD}:c1` })).toBe(true);
+  });
+  it("rejects the follow gate's payload, so the two steps cannot cross-advance", () => {
+    expect(confirmsTap({ payload: FOLLOW_PAYLOAD })).toBe(false);
+  });
+  it("rejects a foreign button's payload", () => {
+    expect(confirmsTap({ payload: "SOME_OTHER_BUTTON" })).toBe(false);
+  });
+  // The reported bug: someone ignores the button, types "hey", and gets pulled through the funnel.
+  it("rejects a payload-less message — the reported bug", () => {
+    expect(confirmsTap({})).toBe(false);
+  });
+});
+
+describe("opening re-send cap", () => {
+  it("allows two nudges, then goes quiet", () => {
+    expect(tapReasksExhausted(0)).toBe(false);
+    expect(tapReasksExhausted(1)).toBe(false);
+    expect(tapReasksExhausted(2)).toBe(true);
+    expect(tapReasksExhausted(3)).toBe(true);
   });
 });

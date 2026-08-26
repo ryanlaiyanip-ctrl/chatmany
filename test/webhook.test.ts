@@ -49,6 +49,14 @@ const post = (body: string, sig?: string) =>
     headers: sig ? { "x-hub-signature-256": sig, "content-type": "application/json" } : {},
   });
 
+/** A messaging event as Meta pushes it: a typed DM carries no payload, a press carries one. */
+const typedPush = (text: string, from = "uW") => ({
+  entry: [{ messaging: [{ sender: { id: from }, timestamp: (T + 10) * 1000, message: { text } }] }],
+});
+const pressPush = (payload: string, from = "uW") => ({
+  entry: [{ messaging: [{ sender: { id: from }, timestamp: (T + 20) * 1000, postback: { payload, title: "Go" } }] }],
+});
+
 const commentPush = (id = "cmW", from = "uW") => ({
   entry: [{ changes: [{ field: "comments", value: {
     id, text: "LINK please", timestamp: new Date(T * 1000).toISOString(),
@@ -212,5 +220,46 @@ describe("POST /admin/webhook reports what Meta actually stored", () => {
     const env = await adminEnv();
     const res = await handleWebhookAdmin(env, "GET");
     expect(await res.json()).toMatchObject({ subscribed: false, subscriptions: [] });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The reported bug, end to end on the path production actually uses: someone comments, gets the
+// opening DM, ignores the button, and types a message. They used to be handed the reward for it.
+describe("a typed DM is not a button press (regression)", () => {
+  const send = async (env: Env, body: unknown) => {
+    const raw = JSON.stringify(body);
+    return handleWebhookEvent(env, post(raw, await sign(raw)));
+  };
+
+  it("typing after the opening DM does not deliver the reward", async () => {
+    const env = await envFor("polling");
+    await send(env, commentPush());
+    expect(client.calls.privateReply).toHaveLength(1); // opening DM went out
+
+    const res = await send(env, typedPush("hey what is this?"));
+    expect(res.status).toBe(200);
+    expect(client.calls.text).toHaveLength(0); // ← the bug: this used to be 1
+  });
+
+  it("the button they ignored is put back in front of them, capped at twice", async () => {
+    const env = await envFor("polling");
+    await send(env, commentPush());
+
+    await send(env, typedPush("hey"));
+    await send(env, typedPush("hello?"));
+    await send(env, typedPush("anyone there"));
+
+    expect(client.calls.button).toHaveLength(2); // two nudges, then quiet — not one DM per message
+    const nudge = client.calls.button[0] as { buttons: { payload: string }[] };
+    expect(nudge.buttons[0]!.payload).toBe("OPENING_TAP:c1");
+    expect(client.calls.text).toHaveLength(0); // and still no reward
+  });
+
+  it("an actual press still delivers, so the funnel is not simply broken", async () => {
+    const env = await envFor("polling");
+    await send(env, commentPush());
+    await send(env, pressPush("OPENING_TAP:c1"));
+    expect(client.calls.text).toHaveLength(1);
   });
 });

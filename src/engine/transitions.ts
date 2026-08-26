@@ -2,10 +2,13 @@
 // applies these decisions against the DB and the send queue.
 //
 //   NEW ─opening private reply─▶ AWAITING_TAP
-//   AWAITING_TAP ─tap─▶ ( check_follow ? AWAITING_FOLLOW : ask_email ? AWAITING_EMAIL : DELIVER )
-//   AWAITING_FOLLOW ─button tap / any reply─▶ ( ask_email ? AWAITING_EMAIL : DELIVER )
+//   AWAITING_TAP ─opening postback─▶ ( check_follow ? AWAITING_FOLLOW : ask_email ? AWAITING_EMAIL : DELIVER )
+//   AWAITING_FOLLOW ─gate postback─▶ ( ask_email ? AWAITING_EMAIL : DELIVER )
 //   AWAITING_EMAIL ─email─▶ DELIVER
 //   DELIVER ─▶ DONE
+//
+// The two postback transitions require OUR payload. A typed reply is not a press: it gets a capped
+// re-send of the button it ignored, and the funnel stays where it is.
 
 import type { Campaign, State } from "../types";
 
@@ -111,19 +114,48 @@ export function parsePayload(payload: string | undefined): { kind: string | null
  * leaves the thread, or comes back later, which stranded people in AWAITING_FOLLOW with nothing
  * left to tap and no way to reach the reward. A button template stays in the transcript.
  *
- * The cost is that a postback posts no visible user text, so the old rule — match the reply
- * against the button title — can never fire in polling mode, which doesn't see the payload
- * either. So any inbound message confirms, exactly as AWAITING_TAP already does for the opening
- * button. That is weaker than it sounds: the gate is self-attestation regardless (the API cannot
- * verify that a specific person followed), and the title-match rule silently ignored every reply
- * that wasn't the chip text verbatim — a typo or an emoji-less "i followed" left them stuck.
- *
- * When a payload IS present (webhook mode) it must be ours: that distinguishes a real gate tap
- * from some other button, so those events don't cross-advance.
+ * A press must therefore be proven by OUR payload. This used to fall back to "any message
+ * confirms" when no payload was present, which was written for polling mode (which never surfaces
+ * one) — but with a webhook callback registered, a real press ALWAYS carries its payload and a
+ * typed message never does. So the fallback stopped distinguishing the two and simply confirmed
+ * the follow for anyone who typed anything at the gate, which is precisely what it exists to
+ * prevent. Absence of a payload is now treated as what it actually is: not a press.
  */
 export function confirmsFollow(evt: { text?: string; payload?: string }): boolean {
-  const { kind } = parsePayload(evt.payload);
-  if (kind) return kind === FOLLOW_PAYLOAD;
-  return true;
+  return parsePayload(evt.payload).kind === FOLLOW_PAYLOAD;
 }
 
+/**
+ * Does this inbound message confirm the opening tap?
+ *
+ * Same rule, same reasoning as confirmsFollow. AWAITING_TAP previously advanced on ANY inbound
+ * message, so somebody who ignored the button and typed "hey" was pushed through the funnel and
+ * counted as a click. The postback payload is the only thing that actually distinguishes a press
+ * from a reply, so it is now required.
+ */
+export function confirmsTap(evt: { payload?: string }): boolean {
+  return parsePayload(evt.payload).kind === OPENING_PAYLOAD;
+}
+
+/**
+ * Is this message something we may answer with a re-send?
+ *
+ * A typed reply (no payload) is a person talking to us, so yes. One of OUR buttons is a deliberate
+ * press, so yes. SOMEONE ELSE'S button payload is another integration's event that happens to have
+ * reached this account — answering it would mean sending a DM off the back of an event that was
+ * never ours, so those are ignored entirely.
+ */
+export function mayReplyTo(evt: { payload?: string }): boolean {
+  const { kind } = parsePayload(evt.payload);
+  return kind === null || kind === OPENING_PAYLOAD || kind === FOLLOW_PAYLOAD;
+}
+
+/**
+ * How many times we will re-send the OPENING button to someone who replies in AWAITING_TAP
+ * without pressing it. Capped for the same reason as the other two re-send counters.
+ */
+const MAX_TAP_REASKS = 2;
+
+export function tapReasksExhausted(retries: number): boolean {
+  return retries >= MAX_TAP_REASKS;
+}

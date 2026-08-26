@@ -20,10 +20,13 @@ import {
   afterFollow,
   afterTap,
   confirmsFollow,
+  confirmsTap,
   emailReasksExhausted,
+  mayReplyTo,
   followGateReasksExhausted,
   parsePayload,
   taggedPayload,
+  tapReasksExhausted,
 } from "./transitions";
 import {
   claimCommentAction,
@@ -89,6 +92,30 @@ function trimToLength(s: string, max: number): string {
     out += ch;
   }
   return out;
+}
+
+/**
+ * How far along the funnel each waiting state is. Used to decide which of several open funnels a
+ * payload-less message most plausibly belongs to.
+ */
+const FUNNEL_DEPTH: Record<string, number> = { AWAITING_EMAIL: 3, AWAITING_FOLLOW: 2, AWAITING_TAP: 1 };
+
+/**
+ * Order the funnels a payload-less message could belong to, most plausible first.
+ *
+ * Deepest first: if someone has one funnel waiting on a tap and another waiting on an email, a
+ * typed address is obviously meant for the email step — taking them in table order would let the
+ * tap funnel consume the message as a nudge and waste the address. Ties break on the most recently
+ * created funnel, which is the post they commented on most recently and so the one they are most
+ * likely to be asking about.
+ *
+ * A tagged press never reaches this: it names its campaign, so there is exactly one target.
+ */
+function inReplyOrder(convos: ConversationRow[]): ConversationRow[] {
+  return [...convos].sort(
+    (a, b) =>
+      (FUNNEL_DEPTH[b.state] ?? 0) - (FUNNEL_DEPTH[a.state] ?? 0) || b.created_at - a.created_at,
+  );
 }
 
 /** Deterministic rotation through public-reply variants so it looks human. */
@@ -181,23 +208,45 @@ export class Engine {
   // ---- messages ----
 
   /**
-   * Handle an inbound message: advance any of this person's open conversations. In polling mode
-   * the hidden payload is often unavailable, so taps are resolved by matching the message text to
-   * the expected button title for the current state (and, for AWAITING_TAP, any inbound message
-   * counts — the opening postback posts no visible text; webhook mode also delivers the payload).
+   * Handle an inbound message: advance any of this person's open conversations.
+   *
+   * A button press is proven by its postback payload and nothing else. AWAITING_TAP and
+   * AWAITING_FOLLOW both used to advance on any inbound message, a rule inherited from polling
+   * mode (which never surfaces a payload) — but once a webhook callback is registered, a real
+   * press always carries one and a typed message never does, so that rule just pulled people who
+   * had not pressed anything through the funnel. A reply that is not a press now gets the button
+   * it ignored re-sent, capped, and leaves the state where it was.
    */
   async handleMessage(evt: NormalizedMessage): Promise<void> {
     const open = await getOpenConversations(this.db, evt.igsid);
 
-    // If the press identifies which campaign's button it was, only that funnel advances. Everything
-    // else — a typed reply, or a legacy untagged button still sitting in someone's inbox — carries
-    // no such information, so it falls back to advancing every open funnel as before. That fallback
-    // is why someone with two funnels open still completes both by typing "ok": the message simply
-    // does not say which one they meant, and there is nothing to infer it from.
+    // If the press identifies which campaign's button it was, only that funnel is considered.
+    // Everything else — a typed reply, or a legacy untagged button still sitting in someone's inbox
+    // — names no campaign, so every open funnel is considered instead. That is a wider net, not a
+    // looser rule: each funnel still requires a real press to advance, so a typed "ok" reaching all
+    // of them advances none of them. The only thing the net changes is which funnel gets to answer,
+    // which is what inReplyOrder and the one-nudge budget below decide.
     const { campaignId: tapped } = parsePayload(evt.payload);
     const targets = tapped ? open.filter((c) => c.campaign_id === tapped) : open;
 
-    for (const convo of targets) {
+    /**
+     * AT MOST ONE NUDGE PER INBOUND MESSAGE.
+     *
+     * Every campaign shares ONE Instagram DM thread with a person. Someone who comments on two
+     * posts without pressing anything has two funnels open in that single thread, so nudging per
+     * conversation meant one typed "hey" produced two button DMs back to back — and with three
+     * campaigns, three. That is the same fan-out that used to fire a reward per funnel, just moved
+     * from rewards to re-sends, and it is precisely the burst pattern the per-conversation caps
+     * exist to prevent (those caps bound each funnel separately, which bounds nothing in a thread
+     * holding several).
+     *
+     * A nudge is us reacting to something that was NOT a signal, so it is the least justified send
+     * we make: one per message is plenty. Real progress — an email arriving, a tagged press — is
+     * earned by the person's own action and stays unrestricted.
+     */
+    let nudged = false;
+
+    for (const convo of inReplyOrder(targets)) {
       // Idempotency: only act on a message that arrived after our last transition, so re-reads of
       // the same message in the conversation history don't advance the funnel twice.
       if (evt.timestamp <= convo.updated_at) continue;
@@ -207,13 +256,13 @@ export class Engine {
 
       switch (convo.state as State) {
         case "AWAITING_TAP":
-          await this.onTap(campaign, evt);
+          if (await this.onTap(campaign, evt, convo.tap_retries, !nudged)) nudged = true;
           break;
         case "AWAITING_FOLLOW":
-          await this.onFollow(campaign, evt, convo.follow_retries);
+          if (await this.onFollow(campaign, evt, convo.follow_retries, !nudged)) nudged = true;
           break;
         case "AWAITING_EMAIL":
-          await this.onEmail(campaign, evt, convo.email_retries);
+          if (await this.onEmail(campaign, evt, convo.email_retries, !nudged)) nudged = true;
           break;
         default:
           break; // NEW / DELIVER / DONE — nothing to do
@@ -221,28 +270,87 @@ export class Engine {
     }
   }
 
-  private async onTap(campaign: Campaign, evt: NormalizedMessage): Promise<void> {
-    // Any inbound message (or an explicit OPENING_TAP payload) counts as the tap. The
-    // button_clicked event is logged inside enterState, only once the next message actually sends,
-    // so a failed send leaves the tap message unconsumed (updated_at unchanged) for a clean retry.
+  /** Returns true if this consumed the message's one allowed nudge. */
+  private async onTap(
+    campaign: Campaign,
+    evt: NormalizedMessage,
+    tapReasks: number,
+    mayNudge: boolean,
+  ): Promise<boolean> {
+    if (!confirmsTap(evt)) {
+      // Not our opening button, so not a click and never counted as one. A typed reply or a press
+      // of our own gate button gets the opening put back at the bottom of the thread rather than
+      // silence; a FOREIGN button's payload is someone else's event and earns no send at all.
+      if (mayNudge && mayReplyTo(evt)) return this.resendOpening(campaign, evt.igsid, tapReasks);
+      return false; // stay in AWAITING_TAP
+    }
+    // The button_clicked event is logged inside enterState, only once the next message actually
+    // sends, so a failed send leaves the tap message unconsumed (updated_at unchanged) for a
+    // clean retry.
     await this.enterState(campaign, evt.igsid, afterTap(campaign), { entryEvent: "button_clicked" });
+    return false; // an advance is progress, not a nudge
   }
 
-  private async onFollow(campaign: Campaign, evt: NormalizedMessage, gateReasks: number): Promise<void> {
+  /**
+   * Re-send the opening button to someone who replied in AWAITING_TAP without pressing it, capped.
+   *
+   * Claim-free and claimed-on-the-current-counter for exactly the reasons spelled out on
+   * resendFollowGate: the original opening's send claim is still held, and keying the claim on the
+   * counter's current value means two replies arriving at once contend for one key instead of each
+   * sending their own nudge. The counter is bumped only once the re-send actually goes out.
+   *
+   * Note this goes to the IGSID as a normal button template, NOT as a private reply to the comment
+   * — Instagram allows a private reply to a given comment exactly once, so re-using that path here
+   * would be rejected outright (error 10903).
+   */
+  private async resendOpening(campaign: Campaign, igsid: string, reasks: number): Promise<boolean> {
+    if (tapReasksExhausted(reasks)) {
+      console.warn(`[chatmany] opening re-send cap reached for ${igsid} on ${campaign.campaign_id}; staying quiet.`);
+      return false;
+    }
+    const button = {
+      type: "postback" as const,
+      title: buttonTitle(campaign.copy.opening_button, "Continue"),
+      payload: taggedPayload(OPENING_PAYLOAD, campaign.campaign_id),
+    };
+    const ok = await this.trySend(
+      () => this.client.sendButtonTemplate({ igsid }, campaign.copy.opening, [button]),
+      "opening_resend",
+      `opening_resend:${campaign.campaign_id}:${igsid}:${reasks}`,
+    );
+    if (ok) {
+      await updateConversation(this.db, igsid, campaign.campaign_id, {
+        state: "AWAITING_TAP",
+        tap_retries: reasks + 1,
+      });
+    }
+    return ok;
+  }
+
+  /** Returns true if this consumed the message's one allowed nudge. */
+  private async onFollow(
+    campaign: Campaign,
+    evt: NormalizedMessage,
+    gateReasks: number,
+    mayNudge: boolean,
+  ): Promise<boolean> {
     if (!confirmsFollow(evt)) {
-      // Not the gate button. If it was OUR opening button — a button template, so it sits in the
-      // transcript forever and is easy to scroll up and re-press — put the gate back at the bottom
-      // of the thread rather than answering a deliberate press with silence. Any other button's
-      // payload is someone else's event and must not cross-advance, so it stays ignored.
-      const { kind } = parsePayload(evt.payload);
-      if (kind === OPENING_PAYLOAD) await this.resendFollowGate(campaign, evt.igsid, gateReasks);
-      return; // either way, stay in AWAITING_FOLLOW
+      // Not the gate button. That now covers a typed reply as well as a re-press of our opening
+      // button (a button template sits in the transcript forever and is easy to scroll up and hit
+      // again), and both deserve the same answer: put the gate back at the bottom of the thread,
+      // capped, rather than responding with silence.
+      //
+      // The one thing that must stay ignored is SOMEONE ELSE'S button payload — a foreign postback
+      // is another integration's event and must never make us send anything.
+      if (mayNudge && mayReplyTo(evt)) return this.resendFollowGate(campaign, evt.igsid, gateReasks);
+      return false; // either way, stay in AWAITING_FOLLOW
     }
 
     await this.enterState(campaign, evt.igsid, afterFollow(campaign), {
       entryEvent: "follow_confirmed",
       patch: { followed: 1 },
     });
+    return false;
   }
 
   /**
@@ -253,10 +361,10 @@ export class Engine {
    * The counter is only bumped once the re-send actually goes out, so a failed send retries
    * cleanly instead of silently spending one of the two allowed nudges.
    */
-  private async resendFollowGate(campaign: Campaign, igsid: string, reasks: number): Promise<void> {
+  private async resendFollowGate(campaign: Campaign, igsid: string, reasks: number): Promise<boolean> {
     if (followGateReasksExhausted(reasks)) {
       console.warn(`[chatmany] follow-gate re-send cap reached for ${igsid} on ${campaign.campaign_id}; staying quiet.`);
-      return;
+      return false;
     }
     const button = {
       type: "postback" as const,
@@ -279,17 +387,27 @@ export class Engine {
         follow_retries: reasks + 1,
       });
     }
+    return ok;
   }
 
-  private async onEmail(campaign: Campaign, evt: NormalizedMessage, reasks: number): Promise<void> {
+  /** Returns true if this consumed the message's one allowed nudge. */
+  private async onEmail(
+    campaign: Campaign,
+    evt: NormalizedMessage,
+    reasks: number,
+    mayNudge: boolean,
+  ): Promise<boolean> {
     const email = evt.email ?? extractEmail(evt.text);
     if (!email) {
       // Not a valid email (no @ / not chip-provided) — re-ask instead of silently ignoring it,
       // so the person gets a nudge rather than the bot going quiet. Resource is never sent from here.
-      await this.resendEmailAsk(campaign, evt.igsid, reasks);
-      return;
+      if (mayNudge) return this.resendEmailAsk(campaign, evt.igsid, reasks);
+      return false;
     }
+    // Capturing an address is progress, not a nudge: someone with two funnels waiting on an email
+    // gave one address for both, and both rewards should go out.
     await this.enterState(campaign, evt.igsid, "DELIVER", { entryEvent: "email_captured", patch: { email } });
+    return false;
   }
 
   /**
@@ -303,10 +421,10 @@ export class Engine {
    * Hitting the cap only stops the nudging. The conversation stays in AWAITING_EMAIL, so an address
    * sent later is still captured and still delivers the reward.
    */
-  private async resendEmailAsk(campaign: Campaign, igsid: string, reasks: number): Promise<void> {
+  private async resendEmailAsk(campaign: Campaign, igsid: string, reasks: number): Promise<boolean> {
     if (emailReasksExhausted(reasks)) {
       console.warn(`[chatmany] email re-ask cap reached for ${igsid} on ${campaign.campaign_id}; staying quiet.`);
-      return;
+      return false;
     }
     const ok = await this.trySend(
       () =>
@@ -329,6 +447,7 @@ export class Engine {
         email_retries: reasks + 1,
       });
     }
+    return ok;
   }
 
   /**
