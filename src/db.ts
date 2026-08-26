@@ -220,6 +220,25 @@ export async function getConversation(
     .first<ConversationRow>();
 }
 
+/**
+ * EVERY conversation for a person, finished ones included.
+ *
+ * The engine needs the finished ones purely for their button labels: a completed funnel's button
+ * template is still sitting in the transcript and can still be pressed, and its label echo has to
+ * be recognised as ours. Filtering to open funnels first meant a DONE funnel's echo looked like a
+ * stranger's text to whichever funnel was still open, and nudged it.
+ */
+export async function getAllConversations(
+  db: D1Database,
+  igsid: string,
+): Promise<ConversationRow[]> {
+  const rows = await db
+    .prepare("SELECT * FROM conversations WHERE igsid = ?")
+    .bind(igsid)
+    .all<ConversationRow>();
+  return rows.results ?? [];
+}
+
 /** All non-terminal conversations for a person (a message may advance any of them). */
 export async function getOpenConversations(
   db: D1Database,

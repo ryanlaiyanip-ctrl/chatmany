@@ -795,3 +795,107 @@ describe("11 · the button-label echo (production regressions)", () => {
     sim.note("✅ Their press still works whenever it lands.");
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// The case Ryan asked for directly: comment on one video, ignore its button, comment on a second,
+// then press one of them. Both orderings, and with per-campaign button labels as well as shared
+// ones — the label echo names no campaign, so a differing label used to make one press look like a
+// typed reply to the OTHER funnel.
+describe("12 · two videos, one press", () => {
+  const setup = async (sim: Sim, sameLabels: boolean) => {
+    await sim.campaign(campaign({
+      campaign_id: "c1", media_id: "reel_1", keywords: ["LINK"], check_follow: true,
+    }));
+    await sim.campaign(campaign({
+      campaign_id: "c2", media_id: "reel_2", keywords: ["GUIDE"], check_follow: true,
+      reward: { type: "link", value: "https://example.com/other" },
+      copy: {
+        ...campaign().copy,
+        opening_button: sameLabels ? "Send it to me" : "Get the guide",
+        follow_button: sameLabels ? "✅ I followed" : "✅ Done",
+      },
+    }));
+  };
+
+  /** A press as Instagram really delivers it: the postback, then its label echoed as a message. */
+  const press = async (sim: Sim, who: string, label: string, payload: string) => {
+    await sim.taps(who, label, payload);
+    await sim.types(who, label); // the echo — the bubble they never typed
+  };
+
+  it("★ ignores video 1's button, comments on video 2, presses VIDEO 2", async () => {
+    const sim = new Sim("SCENARIO 12A — ★ presses the second video's button", "Only that funnel may move.");
+    await setup(sim, true);
+    await sim.comments("ada", "LINK", "reel_1");
+    await sim.comments("ada", "GUIDE", "reel_2");
+    const afterOpenings = sim.received();
+
+    await press(sim, "ada", "Send it to me", "OPENING_TAP:c2");
+    expect(sim.received()).toBe(afterOpenings + 1); // the gate, and nothing else
+    expect(await sim.state("ada", "c2")).toBe("AWAITING_FOLLOW");
+    expect(await sim.state("ada", "c1")).toBe("AWAITING_TAP");
+    expect((await getConversation(sim.db, "ada", "c1"))?.tap_retries).toBe(0);
+    sim.note("✅ Video 1 untouched — not advanced, not nudged, no re-send spent on it.");
+
+    await press(sim, "ada", "✅ I followed", "FOLLOW_CONFIRM:c2");
+    expect(await sim.state("ada", "c2")).toBe("DONE");
+    expect(await sim.state("ada", "c1")).toBe("AWAITING_TAP");
+    sim.note("✅ One reward, for the video they actually pressed on. First press, no repeats.");
+  });
+
+  it("★ ignores video 1's button, comments on video 2, then presses VIDEO 1", async () => {
+    const sim = new Sim("SCENARIO 12B — ★ goes back and presses the first video's button", "The older funnel still works.");
+    await setup(sim, true);
+    await sim.comments("ben", "LINK", "reel_1");
+    await sim.comments("ben", "GUIDE", "reel_2");
+    const afterOpenings = sim.received();
+
+    await press(sim, "ben", "Send it to me", "OPENING_TAP:c1");
+    expect(sim.received()).toBe(afterOpenings + 1);
+    expect(await sim.state("ben", "c1")).toBe("AWAITING_FOLLOW");
+    expect(await sim.state("ben", "c2")).toBe("AWAITING_TAP");
+
+    await press(sim, "ben", "✅ I followed", "FOLLOW_CONFIRM:c1");
+    expect(await sim.state("ben", "c1")).toBe("DONE");
+    expect(await sim.state("ben", "c2")).toBe("AWAITING_TAP");
+    sim.note("✅ Scrolling back up to the older button still completes that funnel, and only it.");
+  });
+
+  it("★ same thing when the two videos use DIFFERENT button labels", async () => {
+    const sim = new Sim(
+      "SCENARIO 12C — ★ per-campaign button labels",
+      "The echo names no campaign, so a differing label made one press read as a typed reply to the other funnel.",
+    );
+    await setup(sim, false);
+    await sim.comments("cleo", "LINK", "reel_1");
+    await sim.comments("cleo", "GUIDE", "reel_2");
+    const afterOpenings = sim.received();
+
+    await press(sim, "cleo", "Get the guide", "OPENING_TAP:c2");
+    expect(sim.received()).toBe(afterOpenings + 1);
+    sim.note("✅ One DM. Before this was matched thread-wide, video 1 was nudged by video 2's echo.");
+    expect(await sim.state("cleo", "c1")).toBe("AWAITING_TAP");
+    expect((await getConversation(sim.db, "cleo", "c1"))?.tap_retries).toBe(0);
+
+    await press(sim, "cleo", "✅ Done", "FOLLOW_CONFIRM:c2");
+    expect(await sim.state("cleo", "c2")).toBe("DONE");
+    expect((await getConversation(sim.db, "cleo", "c1"))?.tap_retries).toBe(0);
+    sim.note("✅ Video 1 still has its full nudge budget intact — it was never spoken to.");
+  });
+
+  it("★ and they finish BOTH videos, one press each", async () => {
+    const sim = new Sim("SCENARIO 12D — ★ both funnels completed", "Two presses, two rewards, no crossfire.");
+    await setup(sim, true);
+    await sim.comments("dev", "LINK", "reel_1");
+    await sim.comments("dev", "GUIDE", "reel_2");
+
+    await press(sim, "dev", "Send it to me", "OPENING_TAP:c1");
+    await press(sim, "dev", "✅ I followed", "FOLLOW_CONFIRM:c1");
+    expect(await sim.state("dev", "c1")).toBe("DONE");
+
+    await press(sim, "dev", "Send it to me", "OPENING_TAP:c2");
+    await press(sim, "dev", "✅ I followed", "FOLLOW_CONFIRM:c2");
+    expect(await sim.state("dev", "c2")).toBe("DONE");
+    sim.note("✅ Both rewards, each earned by its own press.");
+  });
+});

@@ -35,6 +35,7 @@ import {
   getActiveCampaigns,
   getCampaign,
   getConversation,
+  getAllConversations,
   getOpenConversations,
   isCommentProcessed,
   logEvent,
@@ -227,15 +228,19 @@ export class Engine {
    * So an echo is ignored outright: no advance, no nudge, and deliberately no updated_at bump, so
    * the postback copy still counts whenever it arrives. Someone who genuinely types the label by
    * hand is ignored too, which costs nothing — their press, if they make one, still works.
+   *
+   * Matched against the labels of EVERY funnel this person has open, not just the one being
+   * examined. The echo is a thread-level event and names no campaign, so checking it per campaign
+   * meant pressing video 2's button was an echo to video 2 and a "typed reply" to video 1 — which
+   * nudged video 1 and burned one of its re-sends off a press that had nothing to do with it. That
+   * stayed invisible while every campaign shared the same button text, and would have appeared the
+   * moment one campaign's label was edited in the builder.
    */
-  private isButtonEcho(campaign: Campaign, evt: NormalizedMessage): boolean {
+  private isButtonEcho(evt: NormalizedMessage, ourLabels: Set<string>): boolean {
     if (evt.payload) return false; // carries a payload: this IS the press, not its echo
     const text = evt.text?.trim();
     if (!text) return false;
-    return (
-      text === buttonTitle(campaign.copy.opening_button, "Continue") ||
-      text === buttonTitle(campaign.copy.follow_button, DEFAULT_FOLLOW_BUTTON)
-    );
+    return ourLabels.has(text);
   }
 
   // ---- messages ----
@@ -251,7 +256,11 @@ export class Engine {
    * it ignored re-sent, capped, and leaves the state where it was.
    */
   async handleMessage(evt: NormalizedMessage): Promise<void> {
-    const open = await getOpenConversations(this.db, evt.igsid);
+    // Every funnel, finished ones included: the open ones are what a message can advance, but the
+    // finished ones still contribute button labels (their buttons remain in the transcript, and a
+    // press on one still echoes).
+    const all = await getAllConversations(this.db, evt.igsid);
+    const open = all.filter((c) => c.state !== "DONE");
 
     // If the press identifies which campaign's button it was, only that funnel is considered.
     // Everything else — a typed reply, or a legacy untagged button still sitting in someone's inbox
@@ -277,6 +286,25 @@ export class Engine {
      * we make: one per message is plenty. Real progress — an email arriving, a tagged press — is
      * earned by the person's own action and stays unrestricted.
      */
+    // Fetched up front so the echo check below sees the labels of EVERY funnel this person has,
+    // not just the ones a message could advance. Scoped by `all` rather than `targets` for two
+    // reasons, each of which produced a spurious nudge in testing: a tagged press narrows targets
+    // to one campaign, and a finished funnel is not in `open` at all — yet both still have buttons
+    // sitting in the transcript that echo when pressed.
+    const campaigns = new Map<string, Campaign>();
+    const ourLabels = new Set<string>();
+    for (const convo of all) {
+      const campaign = await getCampaign(this.db, convo.campaign_id);
+      if (!campaign) continue;
+      campaigns.set(convo.campaign_id, campaign);
+      ourLabels.add(buttonTitle(campaign.copy.opening_button, "Continue"));
+      ourLabels.add(buttonTitle(campaign.copy.follow_button, DEFAULT_FOLLOW_BUTTON));
+    }
+    // The label echo of a press. It is one thread event, so it is dropped for the whole message
+    // rather than per funnel — and before any state is read, so it can neither nudge nor stamp
+    // updated_at over the real press.
+    if (this.isButtonEcho(evt, ourLabels)) return;
+
     let nudged = false;
 
     for (const convo of inReplyOrder(targets)) {
@@ -284,12 +312,8 @@ export class Engine {
       // the same message in the conversation history don't advance the funnel twice.
       if (evt.timestamp <= convo.updated_at) continue;
 
-      const campaign = await getCampaign(this.db, convo.campaign_id);
+      const campaign = campaigns.get(convo.campaign_id);
       if (!campaign) continue;
-
-      // The label echo of a press we have already handled (or are about to). Skipped BEFORE any
-      // state read so it can neither nudge nor stamp updated_at over the real press.
-      if (this.isButtonEcho(campaign, evt)) continue;
 
       switch (convo.state as State) {
         case "AWAITING_TAP":
