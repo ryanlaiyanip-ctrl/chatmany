@@ -266,14 +266,13 @@ describe("2 · button tap vs typed reply", () => {
     await sim.comments("lee", "LINK");
     await sim.types("lee", "hey");
     expect(await sim.state("lee")).toBe("AWAITING_TAP");
-    await sim.types("lee", "what is this?");
-    expect(await sim.state("lee")).toBe("AWAITING_TAP");
-    expect(sim.received()).toBe(3); // opening + 2 capped re-sends of the button they ignored
-    sim.note("They stay put, and the button they ignored is put back in front of them — twice, then quiet.");
+    expect(sim.received()).toBe(2); // opening + ONE re-send of the button they ignored
+    sim.note("They stay put, and the button they ignored is put back in front of them. Once.");
 
+    await sim.types("lee", "what is this?");
     await sim.types("lee", "still typing");
-    expect(sim.received()).toBe(3);
-    sim.note("Third message: nothing. The cap is what keeps this from becoming a DM per message.");
+    expect(sim.received()).toBe(2);
+    sim.note("Everything after that: nothing. One nudge per funnel is the whole budget.");
 
     await sim.taps("lee", "Send it to me", "OPENING_TAP:c1");
     expect(await sim.state("lee")).toBe("AWAITING_FOLLOW");
@@ -605,9 +604,9 @@ describe("10 · one person, several posts, nothing pressed", () => {
     const nudges = sim.received() - afterOpenings;
     sim.note(`6 messages → ${nudges} nudge DMs. Never more than one per message, and it stops.`);
     expect(nudges).toBeLessThanOrEqual(6);
-    expect(nudges).toBe(4); // two funnels × a cap of two, then silence
+    expect(nudges).toBe(2); // two funnels × a cap of one, then silence
     await sim.types("owen", "and again");
-    expect(sim.received() - afterOpenings).toBe(4);
+    expect(sim.received() - afterOpenings).toBe(2);
     sim.note("Past the cap on both funnels it goes quiet, however long they keep talking.");
   });
 
@@ -707,5 +706,92 @@ describe("10 · one person, several posts, nothing pressed", () => {
     sim.note("One nudge, for the open funnel only. The finished one stays silent for good.");
     expect(await sim.state("tess", "c1")).toBe("DONE");
     expect(await sim.state("tess", "c2")).toBe("AWAITING_TAP");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Reproductions of real threads from production, 2026-08-26. Pressing a postback button does not
+// only deliver a postback: Instagram ALSO posts the button's label into the thread as a message
+// from that person. One press, two inbound events. Requiring the payload turned that second event
+// into "they typed something", so the bot answered a press by re-sending the button they had just
+// pressed — and when the echo won the race it also stamped updated_at over the real press, burying
+// it, which is why people ended up pressing "✅ I followed" twice.
+describe("11 · the button-label echo (production regressions)", () => {
+  const gated = (sim: Sim) => sim.campaign(campaign({ check_follow: true }));
+
+  it("★ @mannoeglainfit — one tap must not produce three follow gates", async () => {
+    const sim = new Sim(
+      "SCENARIO 11A — ★ press, then the echo arrives (twice, push + poll)",
+      "Shipped behavior sent the gate 3x. follow_retries hit 2 in production.",
+    );
+    await gated(sim);
+    await sim.comments("manno", "LINK");
+    await sim.taps("manno", "Send it to me", "OPENING_TAP:c1");
+    expect(await sim.state("manno")).toBe("AWAITING_FOLLOW");
+    const afterGate = sim.received();
+
+    // The same press, echoed as plain text — once by the webhook, once by the poller underneath.
+    await sim.types("manno", "Send it to me");
+    await sim.types("manno", "Send it to me");
+
+    expect(sim.received()).toBe(afterGate);
+    sim.note("✅ Both echoes ignored. Exactly ONE follow gate, where production sent three.");
+    const convo = await getConversation(sim.db, "manno", "c1");
+    expect(convo?.follow_retries).toBe(0);
+  });
+
+  it("★ @elamelek.25 — the echo must not bury the real press", async () => {
+    const sim = new Sim(
+      "SCENARIO 11B — ★ the echo arrives BEFORE the postback",
+      "The nastiest form: the echo nudged AND stamped updated_at, so the real press was dropped as stale.",
+    );
+    await gated(sim);
+    await sim.comments("ela", "LINK");
+    await sim.taps("ela", "Send it to me", "OPENING_TAP:c1");
+    const afterGate = sim.received();
+
+    // They press "✅ I followed". Its label echo lands first...
+    await sim.types("ela", "✅ I followed");
+    expect(sim.received()).toBe(afterGate);
+    expect(await sim.state("ela")).toBe("AWAITING_FOLLOW");
+    sim.note("Echo ignored — no gate re-sent, and crucially updated_at was NOT touched.");
+
+    // ...so the postback that follows it still counts, first time.
+    await sim.taps("ela", "✅ I followed", "FOLLOW_CONFIRM:c1");
+    expect(await sim.state("ela")).toBe("DONE");
+    sim.note("✅ Delivered on the FIRST press. Production made them press it twice.");
+  });
+
+  it("★ @ryanip.life — a real typed reply still gets exactly one nudge", async () => {
+    const sim = new Sim(
+      "SCENARIO 11C — ★ genuinely typed messages, not echoes",
+      "Suppressing echoes must not suppress the nudge for someone actually talking.",
+    );
+    await sim.campaign(campaign());
+    await sim.comments("ryan", "LINK");
+    const afterOpening = sim.received();
+
+    for (const t of ["Hs", "He", "Haha", "Hello"]) await sim.types("ryan", t);
+
+    expect(sim.received()).toBe(afterOpening + 1);
+    sim.note("4 typed messages → ONE nudge. Production sent two identical cards.");
+    expect(await sim.state("ryan")).toBe("AWAITING_TAP");
+  });
+
+  it("★ an echo is still ignored when it is the only thing that ever arrives", async () => {
+    const sim = new Sim(
+      "SCENARIO 11D — ★ echo with no postback behind it",
+      "Ignoring costs nothing: the button is still in the transcript and a real press still works.",
+    );
+    await gated(sim);
+    await sim.comments("tam", "LINK");
+    const afterOpening = sim.received();
+    await sim.types("tam", "Send it to me");
+    expect(sim.received()).toBe(afterOpening);
+    expect(await sim.state("tam")).toBe("AWAITING_TAP");
+
+    await sim.taps("tam", "Send it to me", "OPENING_TAP:c1");
+    expect(await sim.state("tam")).toBe("AWAITING_FOLLOW");
+    sim.note("✅ Their press still works whenever it lands.");
   });
 });

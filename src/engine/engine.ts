@@ -205,6 +205,39 @@ export class Engine {
     return true;
   }
 
+  /**
+   * Is this the text ECHO of one of our own buttons, rather than something the person typed?
+   *
+   * Pressing a postback button does not only deliver a postback — Instagram also posts the button's
+   * label into the thread as a message from that person. Look at any real transcript: the user's
+   * side shows a bubble reading "Send it to me" or "✅ I followed" that they never typed. So ONE
+   * press arrives as TWO inbound events: the postback carrying the payload, and this echo carrying
+   * only the label.
+   *
+   * Requiring the payload made the echo actively harmful. The postback advances the funnel, and
+   * then the echo — payload-less, and therefore "a typed reply" by the new rule — draws a re-send
+   * of the button they just pressed. That is the duplicate follow gate people were seeing, twice
+   * over when the poller re-read the same echo underneath the webhook.
+   *
+   * It is worse than cosmetic. Whichever copy lands first stamps updated_at, and the idempotency
+   * guard drops anything at or before that. When the echo wins the race it nudges AND buries the
+   * real press, so the person has to press a second time to get anywhere — exactly what the
+   * "pressed ✅ I followed twice" transcript shows.
+   *
+   * So an echo is ignored outright: no advance, no nudge, and deliberately no updated_at bump, so
+   * the postback copy still counts whenever it arrives. Someone who genuinely types the label by
+   * hand is ignored too, which costs nothing — their press, if they make one, still works.
+   */
+  private isButtonEcho(campaign: Campaign, evt: NormalizedMessage): boolean {
+    if (evt.payload) return false; // carries a payload: this IS the press, not its echo
+    const text = evt.text?.trim();
+    if (!text) return false;
+    return (
+      text === buttonTitle(campaign.copy.opening_button, "Continue") ||
+      text === buttonTitle(campaign.copy.follow_button, DEFAULT_FOLLOW_BUTTON)
+    );
+  }
+
   // ---- messages ----
 
   /**
@@ -253,6 +286,10 @@ export class Engine {
 
       const campaign = await getCampaign(this.db, convo.campaign_id);
       if (!campaign) continue;
+
+      // The label echo of a press we have already handled (or are about to). Skipped BEFORE any
+      // state read so it can neither nudge nor stamp updated_at over the real press.
+      if (this.isButtonEcho(campaign, evt)) continue;
 
       switch (convo.state as State) {
         case "AWAITING_TAP":

@@ -117,10 +117,11 @@ describe("opening-tap confirmation", () => {
 });
 
 describe("opening re-send cap", () => {
-  it("allows two nudges, then goes quiet", () => {
+  // ONE nudge. The button template is still sitting in the transcript, so a second copy of the
+  // same card tells them nothing new — it just repeats a message they already ignored twice.
+  it("allows a single nudge, then goes quiet", () => {
     expect(tapReasksExhausted(0)).toBe(false);
-    expect(tapReasksExhausted(1)).toBe(false);
+    expect(tapReasksExhausted(1)).toBe(true);
     expect(tapReasksExhausted(2)).toBe(true);
-    expect(tapReasksExhausted(3)).toBe(true);
   });
 });

@@ -242,7 +242,7 @@ describe("a typed DM is not a button press (regression)", () => {
     expect(client.calls.text).toHaveLength(0); // ← the bug: this used to be 1
   });
 
-  it("the button they ignored is put back in front of them, capped at twice", async () => {
+  it("the button they ignored is put back in front of them, exactly once", async () => {
     const env = await envFor("polling");
     await send(env, commentPush());
 
@@ -250,7 +250,7 @@ describe("a typed DM is not a button press (regression)", () => {
     await send(env, typedPush("hello?"));
     await send(env, typedPush("anyone there"));
 
-    expect(client.calls.button).toHaveLength(2); // two nudges, then quiet — not one DM per message
+    expect(client.calls.button).toHaveLength(1); // one nudge, then quiet — not one DM per message
     const nudge = client.calls.button[0] as { buttons: { payload: string }[] };
     expect(nudge.buttons[0]!.payload).toBe("OPENING_TAP:c1");
     expect(client.calls.text).toHaveLength(0); // and still no reward

@@ -445,7 +445,7 @@ describe("follow gate is a button, not a quick-reply chip", () => {
     expect(client.calls.button).toHaveLength(gatesAfterTap + 1); // gate re-sent, not silence
   });
 
-  it("re-sends the gate at most twice to someone who keeps typing", async () => {
+  it("re-sends the gate at most ONCE to someone who keeps typing", async () => {
     await upsertCampaign(db, campaign({ check_follow: true }), true);
     await engine.handleComment(comment());
     await engine.handleMessage(tap({ timestamp: T + 10 }));
@@ -456,7 +456,7 @@ describe("follow gate is a button, not a quick-reply chip", () => {
     await engine.handleMessage(message({ text: "this", timestamp: T + 40 }));
     await engine.handleMessage(message({ text: "hello?", timestamp: T + 50 }));
 
-    expect(client.calls.button).toHaveLength(base + 2); // capped, not one DM per message
+    expect(client.calls.button).toHaveLength(base + 1); // one nudge only, not one DM per message
     expect((await getConversation(db, "user1", "c1"))?.state).toBe("AWAITING_FOLLOW");
 
     // The cap only stops the nudging — a real press still works afterwards.

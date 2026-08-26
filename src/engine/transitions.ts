@@ -33,7 +33,9 @@ export function emailReasksExhausted(retries: number): boolean {
 }
 
 /**
- * How many times we will re-send the follow gate to someone who presses the WRONG button.
+ * How many times we will re-send the follow gate to someone who does not press it. ONE, for the
+ * same reason as MAX_TAP_REASKS below: the gate is a button template that stays in the transcript,
+ * so repeating it a second time is noise, not help.
  *
  * The opening button is a button template, so it stays in the transcript forever: scrolling up and
  * pressing it again while sitting at the follow gate is easy, and it used to do nothing at all —
@@ -48,7 +50,7 @@ export function emailReasksExhausted(retries: number): boolean {
  * deployed database and has had nothing writing to it since verify_follow_count was removed. No
  * new migration is needed.
  */
-const MAX_FOLLOW_GATE_REASKS = 2;
+const MAX_FOLLOW_GATE_REASKS = 1;
 
 export function followGateReasksExhausted(retries: number): boolean {
   return retries >= MAX_FOLLOW_GATE_REASKS;
@@ -152,9 +154,14 @@ export function mayReplyTo(evt: { payload?: string }): boolean {
 
 /**
  * How many times we will re-send the OPENING button to someone who replies in AWAITING_TAP
- * without pressing it. Capped for the same reason as the other two re-send counters.
+ * without pressing it.
+ *
+ * ONE. Not two. The button is a button template, so it is still sitting in the transcript the
+ * whole time — a second re-send adds no new information, it just repeats a message they have
+ * already seen twice and did not act on. Watching a real thread where somebody typed four times
+ * and got the identical card back twice made that obvious.
  */
-const MAX_TAP_REASKS = 2;
+const MAX_TAP_REASKS = 1;
 
 export function tapReasksExhausted(retries: number): boolean {
   return retries >= MAX_TAP_REASKS;
