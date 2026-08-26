@@ -142,14 +142,23 @@ export function confirmsTap(evt: { payload?: string }): boolean {
 /**
  * Is this message something we may answer with a re-send?
  *
- * A typed reply (no payload) is a person talking to us, so yes. One of OUR buttons is a deliberate
- * press, so yes. SOMEONE ELSE'S button payload is another integration's event that happens to have
- * reached this account — answering it would mean sending a DM off the back of an event that was
- * never ours, so those are ignored entirely.
+ * ONLY a typed reply — a message carrying no payload at all. A nudge exists for one situation:
+ * somebody talked to us instead of pressing the button, and would otherwise get silence. Any
+ * payload means a button was pressed, and a press is never that situation.
+ *
+ * This deliberately reverses an earlier decision to answer a re-press of the OPENING button at the
+ * follow gate by re-sending the gate. The reasoning then was that a press met with silence feels
+ * broken. Real threads showed the cost: presses arrive more than once — people double-tap, Meta
+ * re-delivers, and the poller re-reads underneath the webhook — so honouring a press we had already
+ * honoured put a second identical card in the thread. Silence on a duplicate press is strictly
+ * better than a duplicate DM, and costs nothing: the button we would have re-sent is already the
+ * most recent thing in the conversation.
+ *
+ * Someone else's button payload is ignored for the separate and stronger reason that it is not our
+ * event at all.
  */
 export function mayReplyTo(evt: { payload?: string }): boolean {
-  const { kind } = parsePayload(evt.payload);
-  return kind === null || kind === OPENING_PAYLOAD || kind === FOLLOW_PAYLOAD;
+  return parsePayload(evt.payload).kind === null;
 }
 
 /**

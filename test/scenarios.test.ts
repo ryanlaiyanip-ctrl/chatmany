@@ -899,3 +899,91 @@ describe("12 · two videos, one press", () => {
     sim.note("✅ Both rewards, each earned by its own press.");
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// A sweep of the cases nothing else covered. Two of these were failing when written: a double-tap
+// produced two follow gates, and a foreign button payload arriving at the email step drew an email
+// re-ask. Both were the same shape — a payload that is not the one we are waiting for still drew a
+// send — which is now impossible: only a TYPED reply can ever produce a nudge.
+describe("13 · duplicate presses and stray payloads", () => {
+  const gated = (sim: Sim) => sim.campaign(campaign({ check_follow: true }));
+
+  it("★ double-tapping the button sends ONE gate, not two", async () => {
+    const sim = new Sim("SCENARIO 13A — ★ they tap twice, impatiently", "People double-tap. Meta also re-delivers.");
+    await gated(sim);
+    await sim.comments("iris", "LINK");
+    const afterOpening = sim.received();
+
+    await sim.taps("iris", "Send it to me", "OPENING_TAP:c1");
+    await sim.taps("iris", "Send it to me", "OPENING_TAP:c1");
+
+    expect(sim.received()).toBe(afterOpening + 1);
+    sim.note("✅ One gate. The second press is silent — the gate is already the newest message.");
+    expect((await getConversation(sim.db, "iris", "c1"))?.follow_retries).toBe(0);
+  });
+
+  it("★ a stray button from another app draws nothing, at every step", async () => {
+    const sim = new Sim("SCENARIO 13B — ★ someone else's postback reaches this account", "Never our event, never our send.");
+    await sim.campaign(campaign({ check_follow: true, ask_email: true }));
+    await sim.comments("jan", "LINK");
+
+    let seen = sim.received();
+    await sim.taps("jan", "Some other app", "SOMEONE_ELSES_BUTTON");
+    expect(sim.received()).toBe(seen); // at AWAITING_TAP
+
+    await sim.taps("jan", "Send it to me", "OPENING_TAP:c1");
+    seen = sim.received();
+    await sim.taps("jan", "Some other app", "SOMEONE_ELSES_BUTTON");
+    expect(sim.received()).toBe(seen); // at AWAITING_FOLLOW
+
+    await sim.taps("jan", "✅ I followed", "FOLLOW_CONFIRM:c1");
+    seen = sim.received();
+    await sim.taps("jan", "Some other app", "SOMEONE_ELSES_BUTTON");
+    expect(sim.received()).toBe(seen); // at AWAITING_EMAIL — the step that used to answer it
+    expect((await getConversation(sim.db, "jan", "c1"))?.email_retries).toBe(0);
+    sim.note("✅ Silent in all three waiting states. The email step used to re-ask off the back of it.");
+  });
+
+  it("★ pressing an old button after the funnel is finished does nothing", async () => {
+    const sim = new Sim("SCENARIO 13C — ★ they scroll up and press again, weeks later", "DONE has to mean done.");
+    await sim.campaign(campaign());
+    await sim.comments("kai", "LINK");
+    await sim.taps("kai", "Send it to me", "OPENING_TAP:c1");
+    expect(await sim.state("kai")).toBe("DONE");
+    const afterReward = sim.received();
+
+    await sim.taps("kai", "Send it to me", "OPENING_TAP:c1");
+    await sim.types("kai", "Send it to me");
+    expect(sim.received()).toBe(afterReward);
+    sim.note("✅ No second reward, no nudge. They are finished.");
+  });
+
+  it("★ an over-long label is trimmed on the way out, and its echo still matches", async () => {
+    const sim = new Sim(
+      "SCENARIO 13D — ★ a label past Instagram's 20-character limit",
+      "The echo comes back as the TRIMMED text, so echo-matching has to compare against what was sent.",
+    );
+    await sim.campaign(campaign({
+      copy: { ...campaign().copy, opening_button: "Tap this button right here to get it" },
+    }));
+    await sim.comments("liv", "LINK");
+    const sent = (sim.client.calls.privateReply[0] as { buttons: { title: string }[] }).buttons[0]!.title;
+    expect(sent).toBe("Tap this button righ");
+    const afterOpening = sim.received();
+
+    await sim.types("liv", sent);
+    expect(sim.received()).toBe(afterOpening);
+    expect((await getConversation(sim.db, "liv", "c1"))?.tap_retries).toBe(0);
+    sim.note("✅ Recognised as the echo of our own button despite being cut mid-word.");
+  });
+
+  it("★ a long replay of old history produces one nudge, not forty", async () => {
+    const sim = new Sim("SCENARIO 13E — ★ the poller re-reads a whole backlog", "A cursor reset must not become a DM storm.");
+    await sim.campaign(campaign());
+    await sim.comments("mo", "LINK");
+    const afterOpening = sim.received();
+    for (let i = 0; i < 40; i++) await sim.types("mo", `backlog ${i}`);
+    expect(sim.received()).toBe(afterOpening + 1);
+    sim.note("✅ 40 messages, one nudge. The cap and the one-per-message budget both hold.");
+  });
+});

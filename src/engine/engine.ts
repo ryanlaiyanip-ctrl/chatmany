@@ -460,9 +460,13 @@ export class Engine {
   ): Promise<boolean> {
     const email = evt.email ?? extractEmail(evt.text);
     if (!email) {
-      // Not a valid email (no @ / not chip-provided) — re-ask instead of silently ignoring it,
-      // so the person gets a nudge rather than the bot going quiet. Resource is never sent from here.
-      if (mayNudge) return this.resendEmailAsk(campaign, evt.igsid, reasks);
+      // Not a valid email (no @ / not chip-provided) — re-ask instead of silently ignoring it, so
+      // the person gets a nudge rather than the bot going quiet. Resource is never sent from here.
+      //
+      // Gated on mayReplyTo like the other two states, which this step was missing: a button
+      // payload landing here — a stale button of ours, or another app's event entirely — is not
+      // somebody failing to give an address, and used to draw an email re-ask off the back of it.
+      if (mayNudge && mayReplyTo(evt)) return this.resendEmailAsk(campaign, evt.igsid, reasks);
       return false;
     }
     // Capturing an address is progress, not a nudge: someone with two funnels waiting on an email

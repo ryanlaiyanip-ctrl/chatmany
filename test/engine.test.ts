@@ -501,11 +501,11 @@ describe("duplicate sends when a delivered message reports failure", () => {
     expect(convo?.state).toBe("AWAITING_FOLLOW");
     expect(convo?.follow_retries).toBe(0);
 
-    // Re-pressing the opening button (a button template — it sits in the transcript forever) is
-    // answered by the CAPPED re-send helper, never by the original gate path. follow_retries going
-    // to 1 is what proves which of the two sent it: a duplicate original would leave it at 0.
+    // The same press arriving again — a double-tap, a Meta re-delivery, or the poller re-reading
+    // underneath the webhook — draws NOTHING. A press is not somebody stuck, and the gate we would
+    // re-send is already the newest message in the thread.
     await engine.handleMessage(tap({ timestamp: T + 11 }));
-    expect(client.calls.button).toHaveLength(2);
-    expect((await getConversation(db, "user1", "c1"))?.follow_retries).toBe(1);
+    expect(client.calls.button).toHaveLength(1);
+    expect((await getConversation(db, "user1", "c1"))?.follow_retries).toBe(0);
   });
 });

@@ -62,7 +62,12 @@ describe("buttons: identical labels on both steps", () => {
 });
 
 describe("buttons: pressing the wrong one", () => {
-  it("re-pressing the opening button at the follow gate re-sends the gate, exactly once", async () => {
+  // Reversal of an earlier decision, forced by real threads: re-pressing a button we have already
+  // honoured used to re-send the gate, on the theory that a press met with silence feels broken.
+  // But presses genuinely arrive more than once — people double-tap, Meta re-delivers, the poller
+  // re-reads — so honouring them twice put a second identical card in the thread. Silence is the
+  // better answer, and costs nothing: the gate is already the newest message there.
+  it("re-pressing the opening button at the follow gate draws nothing at all", async () => {
     await upsertCampaign(db, campaign({ check_follow: true }), true);
     await engine.handleComment(comment());
     const opening = openingBtn().payload;
@@ -75,14 +80,14 @@ describe("buttons: pressing the wrong one", () => {
     // be answered with total silence. Now the gate is re-sent, so the right button is back at the
     // bottom of the thread.
     await engine.handleMessage(msg({ payload: opening, timestamp: T + 20 }));
-    expect(client.calls.button).toHaveLength(2);
+    expect(client.calls.button).toHaveLength(1); // still just the one gate
 
-    // Capped at one: an uncapped DM-per-press loop is what platform spam detection watches for,
-    // and a second identical card adds nothing when the first is still in the transcript.
+    // However many times it arrives.
     await engine.handleMessage(msg({ payload: opening, timestamp: T + 30 }));
     await engine.handleMessage(msg({ payload: opening, timestamp: T + 40 }));
     await engine.handleMessage(msg({ payload: opening, timestamp: T + 50 }));
-    expect(client.calls.button).toHaveLength(2);
+    expect(client.calls.button).toHaveLength(1);
+    expect((await getConversation(db, "u1", "c1"))?.follow_retries).toBe(0);
 
     // The cap only stops the re-sends. They are still at the gate, and still able to finish.
     expect((await getConversation(db, "u1", "c1"))?.state).toBe("AWAITING_FOLLOW");
@@ -106,16 +111,15 @@ describe("buttons: pressing the wrong one", () => {
   // arrive while they are back at AWAITING_TAP. It is not the opening button, so it does not stand
   // in for the tap — but it is one of OUR buttons, so it is answered with the opening re-send
   // rather than silence.
-  it("pressing the follow button early (still awaiting tap) re-sends the opening, not the gate", async () => {
+  it("pressing a stale follow button while still awaiting the tap draws nothing", async () => {
     await upsertCampaign(db, campaign({ check_follow: true }), true);
     await engine.handleComment(comment());
     await engine.handleMessage(msg({ payload: "FOLLOW_CONFIRM:c1", timestamp: T + 10 }));
     const convo = await getConversation(db, "u1", "c1");
-    expect(convo?.state).toBe("AWAITING_TAP");
+    expect(convo?.state).toBe("AWAITING_TAP"); // not advanced — that is not the tap
     expect(convo?.followed).toBe(0);
-    expect(convo?.tap_retries).toBe(1);
-    expect(client.calls.button).toHaveLength(1); // the opening re-send
-    expect((client.calls.button[0] as { buttons: { payload: string }[] }).buttons[0]!.payload).toBe("OPENING_TAP:c1");
+    expect(convo?.tap_retries).toBe(0); // and no re-send spent on a press
+    expect(client.calls.button).toHaveLength(0);
   });
 
   // A foreign postback is another integration's event that happened to reach this account. It must
@@ -168,7 +172,7 @@ describe("buttons: pressing the wrong one", () => {
     expect((await getConversation(db, "u1", "c1"))?.state).toBe("AWAITING_FOLLOW");
   });
 
-  it("even if a re-delivery did slip the timestamp guard, the cap bounds it to ONE extra DM", async () => {
+  it("a pathological stream of re-deliveries produces no extra DMs at all", async () => {
     // The guard above rests on the worker's clock being at or ahead of the event timestamp, which
     // holds for Meta's timestamps. This is the backstop if it ever doesn't: the re-send counter is
     // per-person and persisted, so a pathological stream of re-deliveries still cannot become an
@@ -178,7 +182,7 @@ describe("buttons: pressing the wrong one", () => {
     const p = openingBtn().payload;
     await engine.handleMessage(msg({ payload: p, timestamp: T + 10 }));
     for (let i = 0; i < 25; i++) await engine.handleMessage(msg({ payload: p, timestamp: T + 20 + i }));
-    expect(client.calls.button).toHaveLength(2); // the gate + at most 1 re-send, never more
+    expect(client.calls.button).toHaveLength(1); // just the gate — presses never draw a re-send
   });
 });
 
