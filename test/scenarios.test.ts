@@ -192,10 +192,10 @@ describe("1 · the normal path", () => {
     await sim.comments("sara", "LINK please!");
     expect(await sim.state("sara")).toBe("AWAITING_TAP");
 
-    await sim.types("sara", "ok");
+    await sim.taps("sara", "Send it to me", "OPENING_TAP:c1");
     expect(await sim.state("sara")).toBe("AWAITING_FOLLOW");
 
-    await sim.types("sara", "✅ I followed");
+    await sim.taps("sara", "✅ I followed", "FOLLOW_CONFIRM:c1");
     expect(await sim.state("sara")).toBe("AWAITING_EMAIL");
 
     await sim.types("sara", "sara@example.com");
@@ -212,7 +212,7 @@ describe("1 · the normal path", () => {
     const sim = new Sim("SCENARIO 1B — no follow gate, no email", "Fewest steps to the reward.");
     await sim.campaign(campaign());
     await sim.comments("mo", "link");
-    await sim.types("mo", "yes");
+    await sim.taps("mo", "Send it to me", "OPENING_TAP:c1");
     expect(await sim.state("mo")).toBe("DONE");
     sim.note("2 DMs total. Every extra toggle is another place people drop out.");
     expect(sim.received()).toBe(2);
@@ -222,14 +222,14 @@ describe("1 · the normal path", () => {
     const a = new Sim("SCENARIO 1C — follow gate, no email", "");
     await a.campaign(campaign({ check_follow: true }));
     await a.comments("ana", "LINK");
-    await a.types("ana", "hi");
-    await a.types("ana", "done");
+    await a.taps("ana", "Send it to me", "OPENING_TAP:c1");
+    await a.taps("ana", "✅ I followed", "FOLLOW_CONFIRM:c1");
     expect(await a.state("ana")).toBe("DONE");
 
     const b = new Sim("SCENARIO 1D — email, no follow gate", "");
     await b.campaign(campaign({ ask_email: true }));
     await b.comments("ben", "LINK");
-    await b.types("ben", "hi");
+    await b.taps("ben", "Send it to me", "OPENING_TAP:c1");
     await b.types("ben", "ben@example.com");
     expect(await b.state("ben")).toBe("DONE");
   });
@@ -251,20 +251,33 @@ describe("2 · button tap vs typed reply", () => {
     const sim = new Sim("SCENARIO 2B — some other button's payload", "Guards against unrelated events advancing the funnel.");
     await sim.campaign(campaign({ check_follow: true }));
     await sim.comments("kit", "LINK");
-    await sim.types("kit", "hi");
+    await sim.taps("kit", "Send it to me", "OPENING_TAP:c1");
     await sim.taps("kit", "Some other button", "SOMETHING_ELSE");
     expect(await sim.state("kit")).toBe("AWAITING_FOLLOW");
     sim.note("Correctly ignored — they stay at the gate.");
   });
 
-  it("in polling mode any typed reply passes the gate", async () => {
-    const sim = new Sim("SCENARIO 2C — polling mode, they type instead of tapping", "Polling never sees payloads, so any message counts.");
+  it("a typed reply does NOT stand in for a press", async () => {
+    const sim = new Sim(
+      "SCENARIO 2C — they type instead of tapping",
+      "The reported bug. Typing used to carry them through the whole funnel.",
+    );
     await sim.campaign(campaign({ check_follow: true }));
     await sim.comments("lee", "LINK");
     await sim.types("lee", "hey");
+    expect(await sim.state("lee")).toBe("AWAITING_TAP");
     await sim.types("lee", "what is this?");
-    expect(await sim.state("lee")).toBe("DONE");
-    sim.note("⚠️  'what is this?' passed the follow gate and got the reward. Expected — the gate is a nudge, not a check.");
+    expect(await sim.state("lee")).toBe("AWAITING_TAP");
+    expect(sim.received()).toBe(3); // opening + 2 capped re-sends of the button they ignored
+    sim.note("They stay put, and the button they ignored is put back in front of them — twice, then quiet.");
+
+    await sim.types("lee", "still typing");
+    expect(sim.received()).toBe(3);
+    sim.note("Third message: nothing. The cap is what keeps this from becoming a DM per message.");
+
+    await sim.taps("lee", "Send it to me", "OPENING_TAP:c1");
+    expect(await sim.state("lee")).toBe("AWAITING_FOLLOW");
+    sim.note("✅ And when they DO press it, the funnel picks up exactly where it was.");
   });
 });
 
@@ -326,17 +339,17 @@ describe("4 · the same person, more than once", () => {
     sim.note("Two openings — correct. They asked for two different things.");
     expect(sim.received()).toBe(2);
 
-    await sim.types("finn", "ok");
+    await sim.taps("finn", "Send it to me", "OPENING_TAP:c1");
 
     const c1 = await sim.state("finn", "c1");
     const c2 = await sim.state("finn", "c2");
-    sim.note(`After ONE reply:  c1 = ${c1},  c2 = ${c2}`);
-    sim.note(`They received ${sim.received()} DMs total from 2 comments and 1 reply.`);
+    sim.note(`After ONE press:  c1 = ${c1},  c2 = ${c2}`);
+    sim.note(`They received ${sim.received()} DMs total from 2 comments and 1 press.`);
 
     expect(c1).toBe("DONE");
-    expect(c2).toBe("DONE");
-    expect(sim.received()).toBe(4);
-    sim.note("⚠️  ONE reply satisfied BOTH funnels — they got both rewards, having engaged once.");
+    expect(c2).toBe("AWAITING_TAP");
+    expect(sim.received()).toBe(3);
+    sim.note("✅ One press, one reward. The GUIDE funnel still waits for its own button.");
   });
 
   it("★ a tagged press advances ONLY the video they pressed on", async () => {
@@ -372,19 +385,19 @@ describe("4 · the same person, more than once", () => {
     sim.note("✅ Recognised and honoured, falling back to the old advance-everything behavior.");
   });
 
-  it("typing still advances everything, because a typed reply says nothing about which", async () => {
+  it("typing advances NOTHING, so there is nothing to disambiguate", async () => {
     const sim = new Sim(
       "SCENARIO 4D3 — they type instead of pressing",
-      "The limit of the fix: text carries no campaign, so there is nothing to disambiguate with.",
+      "Text carries no campaign — but it is also no longer a press, so the ambiguity never arises.",
     );
     await sim.campaign(campaign({ campaign_id: "c1", media_id: "reel_1", keywords: ["LINK"] }));
     await sim.campaign(campaign({ campaign_id: "c2", media_id: "reel_2", keywords: ["GUIDE"], reward: { type: "link", value: "https://example.com/other" } }));
     await sim.comments("vic", "LINK", "reel_1");
     await sim.comments("vic", "GUIDE", "reel_2");
     await sim.types("vic", "ok");
-    expect(await sim.state("vic", "c1")).toBe("DONE");
-    expect(await sim.state("vic", "c2")).toBe("DONE");
-    sim.note("Both, as before. Only a button press can be attributed to a campaign.");
+    expect(await sim.state("vic", "c1")).toBe("AWAITING_TAP");
+    expect(await sim.state("vic", "c2")).toBe("AWAITING_TAP");
+    sim.note("Neither. A typed reply is not a press, so no reward goes out and nothing is guessed at.");
   });
 
   it("★ two campaigns on the SAME post, one comment matching both", async () => {
@@ -399,10 +412,11 @@ describe("4 · the same person, more than once", () => {
     sim.note(`One comment → ${sim.received()} opening DMs, back to back, from a single comment.`);
     expect(sim.received()).toBe(2);
 
-    await sim.types("hal", "ok");
-    sim.note(`Then one reply → ${sim.received()} DMs total.`);
+    await sim.taps("hal", "Send it to me", "OPENING_TAP:c1");
+    sim.note(`Then one PRESS → ${sim.received()} DMs total.`);
     expect(await sim.state("hal", "c1")).toBe("DONE");
-    expect(await sim.state("hal", "c2")).toBe("DONE");
+    expect(await sim.state("hal", "c2")).toBe("AWAITING_TAP");
+    sim.note("Only the funnel whose button they actually pressed. The other still waits for its own.");
   });
 
   it("★ 4E with Instagram's real once-per-comment rule applied", async () => {
@@ -438,7 +452,7 @@ describe("5 · email capture", () => {
     const sim = new Sim("SCENARIO 5 — everything people actually type for an email", "");
     await sim.campaign(campaign({ ask_email: true }));
     await sim.comments("gil", "LINK");
-    await sim.types("gil", "ok");
+    await sim.taps("gil", "Send it to me", "OPENING_TAP:c1");
 
     await sim.types("gil", "why do you need that");
     expect(await sim.state("gil")).toBe("AWAITING_EMAIL");
@@ -451,7 +465,7 @@ describe("5 · email capture", () => {
     const sim2 = new Sim("SCENARIO 5B — the native email chip", "");
     await sim2.campaign(campaign({ ask_email: true }));
     await sim2.comments("hana", "LINK");
-    await sim2.types("hana", "ok");
+    await sim2.taps("hana", "Send it to me", "OPENING_TAP:c1");
     await sim2.tapsEmailChip("hana", "hana@example.com");
     expect(await sim2.state("hana")).toBe("DONE");
   });
@@ -463,7 +477,7 @@ describe("6 · after the funnel, and odd timing", () => {
     const sim = new Sim("SCENARIO 6A — they keep talking after getting the reward", "The bot must go quiet, not loop.");
     await sim.campaign(campaign());
     await sim.comments("ivy", "LINK");
-    await sim.types("ivy", "ok");
+    await sim.taps("ivy", "Send it to me", "OPENING_TAP:c1");
     const before = sim.received();
     await sim.types("ivy", "thanks!");
     await sim.types("ivy", "hello?");
@@ -492,9 +506,9 @@ describe("7 · several people at once", () => {
     await sim.comments("bob", "LINK");
     await sim.comments("cal", "LINK");
 
-    await sim.types("ann", "ok");
-    await sim.types("bob", "ok");
-    await sim.types("ann", "followed");
+    await sim.taps("ann", "Send it to me", "OPENING_TAP:c1");
+    await sim.taps("bob", "Send it to me", "OPENING_TAP:c1");
+    await sim.taps("ann", "✅ I followed", "FOLLOW_CONFIRM:c1");
     await sim.types("ann", "ann@example.com");
 
     expect(await sim.state("ann")).toBe("DONE");
@@ -540,5 +554,158 @@ describe("9 · when Instagram misbehaves", () => {
     await sim.repoll("max", "LINK", id);
     expect(sim.received()).toBe(1);
     sim.note("One DM. We assume it landed rather than risk showing it twice.");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Everything here is ONE person with SEVERAL funnels open at once — the case that arises the
+// moment somebody comments on a second post without finishing the first. It matters more than it
+// looks, because all of a person's campaigns share a SINGLE Instagram DM thread: two funnels
+// reacting to one message means two DMs arriving back to back in that one thread.
+describe("10 · one person, several posts, nothing pressed", () => {
+  const twoPosts = async (sim: Sim) => {
+    await sim.campaign(campaign({ campaign_id: "c1", media_id: "reel_1", keywords: ["LINK"] }));
+    await sim.campaign(campaign({
+      campaign_id: "c2", media_id: "reel_2", keywords: ["GUIDE"],
+      reward: { type: "link", value: "https://example.com/other" },
+    }));
+  };
+
+  it("★ comments on one, ignores the button, comments on another, then types", async () => {
+    const sim = new Sim(
+      "SCENARIO 10A — ★ two posts, no presses, then a typed message",
+      "One thread, two open funnels. The reply must not become two DMs.",
+    );
+    await twoPosts(sim);
+    await sim.comments("noa", "LINK", "reel_1");
+    await sim.comments("noa", "GUIDE", "reel_2");
+    expect(sim.received()).toBe(2); // one opening each — correct, they asked for two things
+
+    await sim.types("noa", "hey");
+    expect(sim.received()).toBe(3);
+    sim.note("ONE nudge, not one per funnel. Two would have landed back to back in the same thread.");
+
+    expect(await sim.state("noa", "c1")).toBe("AWAITING_TAP");
+    expect(await sim.state("noa", "c2")).toBe("AWAITING_TAP");
+    sim.note("Neither funnel moved — they still have not pressed anything.");
+  });
+
+  it("★ keeps replying without ever pressing: at most one DM per message they send", async () => {
+    const sim = new Sim(
+      "SCENARIO 10B — ★ they keep typing, two funnels open",
+      "The bound that matters: one inbound message can never produce more than one DM.",
+    );
+    await twoPosts(sim);
+    await sim.comments("owen", "LINK", "reel_1");
+    await sim.comments("owen", "GUIDE", "reel_2");
+    const afterOpenings = sim.received();
+
+    for (const t of ["hey", "hello?", "anyone", "??", "still here", "hello"]) await sim.types("owen", t);
+
+    const nudges = sim.received() - afterOpenings;
+    sim.note(`6 messages → ${nudges} nudge DMs. Never more than one per message, and it stops.`);
+    expect(nudges).toBeLessThanOrEqual(6);
+    expect(nudges).toBe(4); // two funnels × a cap of two, then silence
+    await sim.types("owen", "and again");
+    expect(sim.received() - afterOpenings).toBe(4);
+    sim.note("Past the cap on both funnels it goes quiet, however long they keep talking.");
+  });
+
+  it("★ pressing the SECOND post's button delivers only that reward", async () => {
+    const sim = new Sim(
+      "SCENARIO 10C — ★ they finally press, on the second post",
+      "The press names its campaign, so the other funnel is untouched.",
+    );
+    await twoPosts(sim);
+    await sim.comments("pia", "LINK", "reel_1");
+    await sim.comments("pia", "GUIDE", "reel_2");
+    await sim.types("pia", "what is this");
+
+    await sim.taps("pia", "Send it to me", "OPENING_TAP:c2");
+    expect(await sim.state("pia", "c2")).toBe("DONE");
+    expect(await sim.state("pia", "c1")).toBe("AWAITING_TAP");
+    sim.note("✅ GUIDE delivered. The LINK funnel still waits for its own button — no free reward.");
+  });
+
+  it("★ a typed email goes to the funnel actually waiting for one, not the one waiting for a tap", async () => {
+    const sim = new Sim(
+      "SCENARIO 10D — ★ funnels at different depths",
+      "Order matters: the deepest funnel sees the message first, so the address is not wasted.",
+    );
+    await sim.campaign(campaign({ campaign_id: "c1", media_id: "reel_1", keywords: ["LINK"] }));
+    await sim.campaign(campaign({
+      campaign_id: "c2", media_id: "reel_2", keywords: ["GUIDE"], ask_email: true,
+      reward: { type: "link", value: "https://example.com/other" },
+    }));
+    await sim.comments("quinn", "LINK", "reel_1");   // stays at the tap
+    await sim.comments("quinn", "GUIDE", "reel_2");
+    await sim.taps("quinn", "Send it to me", "OPENING_TAP:c2"); // c2 advances to the email ask
+
+    await sim.tapsEmailChip("quinn", "quinn@example.com");
+    expect(await sim.state("quinn", "c2")).toBe("DONE");
+    sim.note("✅ The address landed on the funnel that asked for it, and the reward went out.");
+    expect(await sim.state("quinn", "c1")).toBe("AWAITING_TAP");
+  });
+
+  it("★ a non-email reply is answered once, by the deepest funnel", async () => {
+    const sim = new Sim(
+      "SCENARIO 10E — ★ they reply with something that is not an address",
+      "Two funnels could both react. Only one is allowed to.",
+    );
+    await sim.campaign(campaign({ campaign_id: "c1", media_id: "reel_1", keywords: ["LINK"] }));
+    await sim.campaign(campaign({
+      campaign_id: "c2", media_id: "reel_2", keywords: ["GUIDE"], ask_email: true,
+      reward: { type: "link", value: "https://example.com/other" },
+    }));
+    await sim.comments("rae", "LINK", "reel_1");
+    await sim.comments("rae", "GUIDE", "reel_2");
+    await sim.taps("rae", "Send it to me", "OPENING_TAP:c2");
+    const before = sim.received();
+
+    await sim.types("rae", "why do you need that");
+    expect(sim.received()).toBe(before + 1);
+    sim.note("One DM: the email step re-asked. The tap funnel stayed quiet rather than piling on.");
+    expect(await sim.state("rae", "c2")).toBe("AWAITING_EMAIL");
+    expect(await sim.state("rae", "c1")).toBe("AWAITING_TAP");
+  });
+
+  it("★ one address still completes TWO funnels that both asked for it", async () => {
+    const sim = new Sim(
+      "SCENARIO 10F — ★ two funnels both waiting on an email",
+      "Capping NUDGES must not cap real progress — they pressed both buttons and earned both.",
+    );
+    await sim.campaign(campaign({ campaign_id: "c1", media_id: "reel_1", keywords: ["LINK"], ask_email: true }));
+    await sim.campaign(campaign({
+      campaign_id: "c2", media_id: "reel_2", keywords: ["GUIDE"], ask_email: true,
+      reward: { type: "link", value: "https://example.com/other" },
+    }));
+    await sim.comments("sam", "LINK", "reel_1");
+    await sim.comments("sam", "GUIDE", "reel_2");
+    await sim.taps("sam", "Send it to me", "OPENING_TAP:c1");
+    await sim.taps("sam", "Send it to me", "OPENING_TAP:c2");
+
+    await sim.tapsEmailChip("sam", "sam@example.com");
+    expect(await sim.state("sam", "c1")).toBe("DONE");
+    expect(await sim.state("sam", "c2")).toBe("DONE");
+    sim.note("✅ Both rewards. Progress is earned by their own presses, so it is never rationed.");
+  });
+
+  it("★ a funnel they already finished does not react to the next post's messages", async () => {
+    const sim = new Sim(
+      "SCENARIO 10G — ★ they completed one post, then commented on another",
+      "A finished funnel must be genuinely finished, not a source of extra DMs forever.",
+    );
+    await twoPosts(sim);
+    await sim.comments("tess", "LINK", "reel_1");
+    await sim.taps("tess", "Send it to me", "OPENING_TAP:c1");
+    expect(await sim.state("tess", "c1")).toBe("DONE");
+
+    await sim.comments("tess", "GUIDE", "reel_2");
+    const before = sim.received();
+    await sim.types("tess", "hey");
+    expect(sim.received()).toBe(before + 1);
+    sim.note("One nudge, for the open funnel only. The finished one stays silent for good.");
+    expect(await sim.state("tess", "c1")).toBe("DONE");
+    expect(await sim.state("tess", "c2")).toBe("AWAITING_TAP");
   });
 });

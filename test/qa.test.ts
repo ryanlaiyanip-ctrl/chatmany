@@ -47,13 +47,17 @@ describe("buttons: identical labels on both steps", () => {
     expect((await getConversation(db, "u1", "c1"))?.state).toBe("DONE");
   });
 
-  it("identical labels in polling mode also complete (any reply advances)", async () => {
+  // This used to assert that typing the label completed the funnel, because matching was done on
+  // text. Routing is now purely by payload, so the label is cosmetic: typing it verbatim — even
+  // typing the EXACT button text — is still just typing, and does not advance anything.
+  it("typing the button's label verbatim is still not a press", async () => {
     const same = "Tap here";
     await upsertCampaign(db, campaign({ check_follow: true, copy: { ...campaign().copy, opening_button: same, follow_button: same } }), true);
     await engine.handleComment(comment());
     await engine.handleMessage(msg({ text: same, timestamp: T + 10 }));
     await engine.handleMessage(msg({ text: same, timestamp: T + 20 }));
-    expect((await getConversation(db, "u1", "c1"))?.state).toBe("DONE");
+    expect((await getConversation(db, "u1", "c1"))?.state).toBe("AWAITING_TAP");
+    expect(client.calls.text).toHaveLength(0); // no reward
   });
 });
 
@@ -98,11 +102,47 @@ describe("buttons: pressing the wrong one", () => {
     expect((await getConversation(db, "u1", "c1"))?.state).toBe("AWAITING_FOLLOW");
   });
 
-  it("pressing the follow button early (still awaiting tap) advances rather than stalling", async () => {
+  // A stale gate button from an earlier run can still sit in the transcript, so this press can
+  // arrive while they are back at AWAITING_TAP. It is not the opening button, so it does not stand
+  // in for the tap — but it is one of OUR buttons, so it is answered with the opening re-send
+  // rather than silence.
+  it("pressing the follow button early (still awaiting tap) re-sends the opening, not the gate", async () => {
     await upsertCampaign(db, campaign({ check_follow: true }), true);
     await engine.handleComment(comment());
     await engine.handleMessage(msg({ payload: "FOLLOW_CONFIRM:c1", timestamp: T + 10 }));
+    const convo = await getConversation(db, "u1", "c1");
+    expect(convo?.state).toBe("AWAITING_TAP");
+    expect(convo?.followed).toBe(0);
+    expect(convo?.tap_retries).toBe(1);
+    expect(client.calls.button).toHaveLength(1); // the opening re-send
+    expect((client.calls.button[0] as { buttons: { payload: string }[] }).buttons[0]!.payload).toBe("OPENING_TAP:c1");
+  });
+
+  // A foreign postback is another integration's event that happened to reach this account. It must
+  // not advance anything AND must not draw a DM out of us either — replying to it would mean
+  // messaging someone off the back of an event that was never ours.
+  it("a foreign button's payload draws no send at all, in either waiting state", async () => {
+    await upsertCampaign(db, campaign({ check_follow: true }), true);
+    await engine.handleComment(comment());
+
+    // ...while awaiting the opening tap
+    await engine.handleMessage(msg({ payload: "SOME_OTHER_APP", timestamp: T + 10 }));
+    let convo = await getConversation(db, "u1", "c1");
+    expect(convo?.state).toBe("AWAITING_TAP");
+    expect(convo?.tap_retries).toBe(0);
+    expect(client.calls.button).toHaveLength(0); // no nudge
+
+    // ...and again while awaiting the follow confirmation
+    await engine.handleMessage(msg({ payload: openingBtn().payload, timestamp: T + 20 }));
     expect((await getConversation(db, "u1", "c1"))?.state).toBe("AWAITING_FOLLOW");
+    const gates = client.calls.button.length;
+
+    await engine.handleMessage(msg({ payload: "SOME_OTHER_APP", timestamp: T + 30 }));
+    convo = await getConversation(db, "u1", "c1");
+    expect(convo?.state).toBe("AWAITING_FOLLOW");
+    expect(convo?.follow_retries).toBe(0);
+    expect(client.calls.button).toHaveLength(gates); // still no nudge
+    expect(client.calls.text).toHaveLength(0);
   });
 
   it("ONE press re-delivered several times still sends the gate exactly once", async () => {
@@ -147,7 +187,7 @@ describe("buttons: hostile and empty labels", () => {
     await upsertCampaign(db, campaign({ check_follow: true, copy: { opening: "o", delivery: "d {reward}" } as never }), true);
     await engine.handleComment(comment());
     expect(openingBtn().title).toBe("Continue");
-    await engine.handleMessage(msg({ timestamp: T + 10 }));
+    await engine.handleMessage(msg({ payload: openingBtn().payload, timestamp: T + 10 }));
     expect(followBtn().title).toBe("✅ I followed");
   });
 

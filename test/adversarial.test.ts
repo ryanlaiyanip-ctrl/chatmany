@@ -33,6 +33,11 @@ const comment = (o: Partial<NormalizedComment> = {}): NormalizedComment =>
 const message = (o: Partial<NormalizedMessage> = {}): NormalizedMessage =>
   ({ kind: "message", igsid: "u1", timestamp: T + 100, ...o });
 
+// A PRESS of our opening button, as a webhook delivers it. A bare message() is a TYPED reply, and
+// since the payload is the only thing separating the two, tests that mean "they tapped" must say so.
+const tap = (o: Partial<NormalizedMessage> = {}): NormalizedMessage =>
+  message({ payload: "OPENING_TAP:c1", ...o });
+
 let db: D1Database;
 let client: FakeClient;
 let engine: Engine;
@@ -61,8 +66,8 @@ describe("races: the same event delivered twice at once", () => {
     await upsertCampaign(db, campaign(), true);
     await engine.handleComment(comment());
     await Promise.all([
-      engine.handleMessage(message({ timestamp: T + 10 })),
-      engine.handleMessage(message({ timestamp: T + 11 })),
+      engine.handleMessage(tap({ timestamp: T + 10 })),
+      engine.handleMessage(tap({ timestamp: T + 11 })),
     ]);
     expect(client.calls.text).toHaveLength(1);
     expect((await getConversation(db, "u1", "c1"))?.state).toBe("DONE");
@@ -117,7 +122,7 @@ describe("hostile campaign ids (config import accepts any string)", () => {
   it("a campaign id that looks like another payload kind cannot forge a follow confirm", async () => {
     await upsertCampaign(db, campaign({ check_follow: true }), true);
     await engine.handleComment(comment());
-    await engine.handleMessage(message({ timestamp: T + 10 }));
+    await engine.handleMessage(tap({ timestamp: T + 10 }));
     expect((await getConversation(db, "u1", "c1"))?.state).toBe("AWAITING_FOLLOW");
 
     // An opening press (wrong kind) must not satisfy the follow gate.
@@ -132,7 +137,7 @@ describe("abusive message streams", () => {
   it("someone who keeps talking is nudged twice, then left alone", async () => {
     await upsertCampaign(db, campaign({ ask_email: true }), true);
     await engine.handleComment(comment());
-    await engine.handleMessage(message({ timestamp: T + 10 })); // → AWAITING_EMAIL, 1 ask
+    await engine.handleMessage(tap({ timestamp: T + 10 })); // → AWAITING_EMAIL, 1 ask
 
     for (let i = 0; i < 8; i++) {
       await engine.handleMessage(message({ text: `nope ${i}`, timestamp: T + 20 + i }));
@@ -145,7 +150,7 @@ describe("abusive message streams", () => {
   it("going quiet does not close the door — a later address still delivers", async () => {
     await upsertCampaign(db, campaign({ ask_email: true }), true);
     await engine.handleComment(comment());
-    await engine.handleMessage(message({ timestamp: T + 10 }));
+    await engine.handleMessage(tap({ timestamp: T + 10 }));
     for (let i = 0; i < 6; i++) await engine.handleMessage(message({ text: "huh", timestamp: T + 20 + i }));
     expect(client.calls.quick).toHaveLength(3); // capped
 
@@ -159,7 +164,7 @@ describe("abusive message streams", () => {
   it("attachment-only messages count against the cap too", async () => {
     await upsertCampaign(db, campaign({ ask_email: true }), true);
     await engine.handleComment(comment());
-    await engine.handleMessage(message({ timestamp: T + 10 }));
+    await engine.handleMessage(tap({ timestamp: T + 10 }));
     // Photos, stickers and voice notes arrive with no `text` field at all.
     for (let i = 0; i < 5; i++) await engine.handleMessage(message({ timestamp: T + 20 + i }));
     expect(client.calls.quick).toHaveLength(3);
@@ -168,7 +173,7 @@ describe("abusive message streams", () => {
   it("a failed re-ask is not counted, so the nudge is not silently spent", async () => {
     await upsertCampaign(db, campaign({ ask_email: true }), true);
     await engine.handleComment(comment());
-    await engine.handleMessage(message({ timestamp: T + 10 }));
+    await engine.handleMessage(tap({ timestamp: T + 10 }));
 
     client.failNext.quick = 1; // Instagram rejects the first re-ask: nothing was delivered
     await engine.handleMessage(message({ text: "what", timestamp: T + 20 }));
@@ -181,7 +186,7 @@ describe("abusive message streams", () => {
   it("a flood of messages after DONE sends nothing", async () => {
     await upsertCampaign(db, campaign(), true);
     await engine.handleComment(comment());
-    await engine.handleMessage(message({ timestamp: T + 10 }));
+    await engine.handleMessage(tap({ timestamp: T + 10 }));
     const before = client.calls.text.length;
     for (let i = 0; i < 20; i++) await engine.handleMessage(message({ text: "hi", timestamp: T + 50 + i }));
     expect(client.calls.text).toHaveLength(before);
@@ -237,7 +242,7 @@ describe("hostile text: keywords and emails", () => {
 
     await upsertCampaign(db, campaign({ ask_email: true }), true);
     await engine.handleComment(comment());
-    await engine.handleMessage(message({ timestamp: T + 10 }));
+    await engine.handleMessage(tap({ timestamp: T + 10 }));
     await engine.handleMessage(message({ text: "=1+1@evil.com", timestamp: T + 20 }));
 
     const env = { DB: db } as unknown as Env;
@@ -283,7 +288,7 @@ describe("malformed and adversarial config", () => {
   it("DEFECT: a delivery message with no {reward} silently sends no link", async () => {
     await upsertCampaign(db, campaign({ copy: { ...campaign().copy, delivery: "thanks for watching!" } }), true);
     await engine.handleComment(comment());
-    await engine.handleMessage(message({ timestamp: T + 10 }));
+    await engine.handleMessage(tap({ timestamp: T + 10 }));
     const sent = client.calls.text[0] as { text: string };
     expect(sent.text).toBe("thanks for watching!");
     expect(sent.text).not.toContain("x.com/g");
@@ -294,7 +299,7 @@ describe("malformed and adversarial config", () => {
   it("a reward value containing {reward} does not recurse", async () => {
     await upsertCampaign(db, campaign({ reward: { type: "text", value: "{reward}" } }), true);
     await engine.handleComment(comment());
-    await engine.handleMessage(message({ timestamp: T + 10 }));
+    await engine.handleMessage(tap({ timestamp: T + 10 }));
     expect((client.calls.text[0] as { text: string }).text).toBe("here {reward}");
   });
 });
@@ -351,13 +356,23 @@ describe("scale", () => {
     expect((await getConversation(db, "u1", "k3"))?.state).toBe("AWAITING_TAP");
   });
 
-  it("DEFECT: one typed reply across 20 campaigns fires 20 rewards at once", async () => {
+  // This was recorded as a DEFECT: a single typed "ok" advanced all 20 open funnels and fired 20
+  // rewards in one burst, well past Instagram's per-second tolerance. It was the most extreme form
+  // of the same root cause as the reported bug — a typed reply being treated as a button press.
+  // Requiring the payload fixes it at the source: "ok" is now a reply to 20 funnels and a press on
+  // none of them.
+  it("one typed reply across 20 campaigns fires NO rewards (was: fired 20 at once)", async () => {
     for (let i = 0; i < 20; i++) {
       await upsertCampaign(db, campaign({ campaign_id: `k${i}`, media_id: `m${i}` }), true);
       await engine.handleComment(comment({ comment_id: `cm${i}`, media_id: `m${i}` }));
     }
     await engine.handleMessage(message({ text: "ok", timestamp: T + 10 }));
-    expect(client.calls.text).toHaveLength(20);
-    // 20 DMs in one burst, well past Instagram's per-second tolerance, from a single "ok".
+    expect(client.calls.text).toHaveLength(0);
+
+    // A real press still carries exactly one campaign's tag, so it advances exactly that funnel.
+    await engine.handleMessage(message({ payload: "OPENING_TAP:k7", timestamp: T + 20 }));
+    expect(client.calls.text).toHaveLength(1);
+    expect((await getConversation(db, "u1", "k7"))?.state).toBe("DONE");
+    expect((await getConversation(db, "u1", "k3"))?.state).toBe("AWAITING_TAP");
   });
 });

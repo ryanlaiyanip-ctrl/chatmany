@@ -1,0 +1,14 @@
+-- How many times we have re-sent the OPENING button to someone sitting in AWAITING_TAP.
+--
+-- Until now any inbound message counted as the tap, so this state could never receive a message
+-- it did not immediately act on. That was wrong: a typed "hey" or "what is this?" is not a button
+-- press, and treating it as one pulled people who never tapped into the follow gate and on to the
+-- reward, while logging a button_clicked event that inflated the funnel.
+--
+-- Now the tap must be proven by the postback payload. The cost is that somebody who replies with
+-- text gets silence, which is worse than the bug for a confused person — so instead we put the
+-- opening button back at the bottom of the thread, capped by this counter for exactly the reason
+-- email_retries exists: an uncapped DM-per-message loop is what platform spam detection watches
+-- for. Reaching the cap only stops the re-sends; the button is still in the transcript and a real
+-- press still advances them.
+ALTER TABLE conversations ADD COLUMN tap_retries INTEGER DEFAULT 0;

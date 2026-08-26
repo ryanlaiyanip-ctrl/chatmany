@@ -93,7 +93,8 @@ describe("deploying BEFORE migrating — why the order matters", () => {
     const engine = new Engine(db, client as never, fast());
 
     for (let tick = 0; tick < 3; tick++) {
-      await expect(engine.handleComment(comment())).rejects.toThrow(/email_retries/);
+      // The column the newest migration adds — update this when a later migration adds another.
+      await expect(engine.handleComment(comment())).rejects.toThrow(/tap_retries/);
     }
 
     // They received exactly one DM — so from their side the automation looks like it worked...
