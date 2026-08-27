@@ -47,17 +47,17 @@ describe("buttons: identical labels on both steps", () => {
     expect((await getConversation(db, "u1", "c1"))?.state).toBe("DONE");
   });
 
-  // This used to assert that typing the label completed the funnel, because matching was done on
-  // text. Routing is now purely by payload, so the label is cosmetic: typing it verbatim — even
-  // typing the EXACT button text — is still just typing, and does not advance anything.
-  it("typing the button's label verbatim is still not a press", async () => {
+  // With ONE funnel open the label is trusted as proof of a press, because a dropped postback
+  // otherwise strands somebody at the gate forever. Identical labels on both steps are therefore
+  // fine: the label says WHICH button, the conversation's state says which step it belongs to.
+  it("typing the label completes the funnel step by step when only one funnel is open", async () => {
     const same = "Tap here";
     await upsertCampaign(db, campaign({ check_follow: true, copy: { ...campaign().copy, opening_button: same, follow_button: same } }), true);
     await engine.handleComment(comment());
     await engine.handleMessage(msg({ text: same, timestamp: T + 10 }));
+    expect((await getConversation(db, "u1", "c1"))?.state).toBe("AWAITING_FOLLOW");
     await engine.handleMessage(msg({ text: same, timestamp: T + 20 }));
-    expect((await getConversation(db, "u1", "c1"))?.state).toBe("AWAITING_TAP");
-    expect(client.calls.text).toHaveLength(0); // no reward
+    expect((await getConversation(db, "u1", "c1"))?.state).toBe("DONE");
   });
 });
 

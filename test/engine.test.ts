@@ -442,10 +442,10 @@ describe("follow gate is a button, not a quick-reply chip", () => {
     expect(convo?.followed).toBe(0); // and NOT recorded as a follower
     expect(client.calls.text).toHaveLength(0); // reward not delivered
     expect((await counts()).follow_confirmed).toBe(0); // funnel not inflated
-    expect(client.calls.button).toHaveLength(gatesAfterTap + 1); // gate re-sent, not silence
+    expect(client.calls.button).toHaveLength(gatesAfterTap); // and NO second gate — sent once, ever
   });
 
-  it("re-sends the gate at most ONCE to someone who keeps typing", async () => {
+  it("never re-sends the gate, however much they type", async () => {
     await upsertCampaign(db, campaign({ check_follow: true }), true);
     await engine.handleComment(comment());
     await engine.handleMessage(tap({ timestamp: T + 10 }));
@@ -454,13 +454,12 @@ describe("follow gate is a button, not a quick-reply chip", () => {
     await engine.handleMessage(message({ text: "what", timestamp: T + 20 }));
     await engine.handleMessage(message({ text: "is", timestamp: T + 30 }));
     await engine.handleMessage(message({ text: "this", timestamp: T + 40 }));
-    await engine.handleMessage(message({ text: "hello?", timestamp: T + 50 }));
 
-    expect(client.calls.button).toHaveLength(base + 1); // one nudge only, not one DM per message
+    expect(client.calls.button).toHaveLength(base); // the gate is still in the thread; once is enough
     expect((await getConversation(db, "user1", "c1"))?.state).toBe("AWAITING_FOLLOW");
 
-    // The cap only stops the nudging — a real press still works afterwards.
-    await engine.handleMessage(gateTap({ timestamp: T + 60 }));
+    // Silence is not a dead end — the press still works, by payload OR by its label echo.
+    await engine.handleMessage(message({ text: "✅ I followed", timestamp: T + 50 }));
     expect((await getConversation(db, "user1", "c1"))?.state).toBe("DONE");
   });
 });
@@ -507,5 +506,21 @@ describe("duplicate sends when a delivered message reports failure", () => {
     await engine.handleMessage(tap({ timestamp: T + 11 }));
     expect(client.calls.button).toHaveLength(1);
     expect((await getConversation(db, "user1", "c1"))?.follow_retries).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A contentless event — no text, no payload — is ambiguous at THIS layer: it is the shape of a
+// read receipt and equally the shape of a photo or voice note. The engine therefore treats it as a
+// reply, and the webhook route is what keeps receipts from reaching it (see webhook.test.ts).
+describe("contentless events", () => {
+  it("never advances a waiting funnel or stamps updated_at over a real press", async () => {
+    await upsertCampaign(db, campaign({ check_follow: true }), true);
+    await engine.handleComment(comment());
+    await engine.handleMessage(message({ timestamp: T + 10 }));
+    const convo = await getConversation(db, "user1", "c1");
+    expect(convo?.state).toBe("AWAITING_TAP");
+    expect(convo?.updated_at).toBe(convo?.created_at); // nothing stamped
+    expect(client.calls.button).toHaveLength(0);
   });
 });

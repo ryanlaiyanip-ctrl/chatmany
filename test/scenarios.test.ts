@@ -265,14 +265,11 @@ describe("2 · button tap vs typed reply", () => {
     await sim.campaign(campaign({ check_follow: true }));
     await sim.comments("lee", "LINK");
     await sim.types("lee", "hey");
-    expect(await sim.state("lee")).toBe("AWAITING_TAP");
-    expect(sim.received()).toBe(2); // opening + ONE re-send of the button they ignored
-    sim.note("They stay put, and the button they ignored is put back in front of them. Once.");
-
     await sim.types("lee", "what is this?");
     await sim.types("lee", "still typing");
-    expect(sim.received()).toBe(2);
-    sim.note("Everything after that: nothing. One nudge per funnel is the whole budget.");
+    expect(await sim.state("lee")).toBe("AWAITING_TAP");
+    expect(sim.received()).toBe(1); // the opening DM, and nothing else, ever
+    sim.note("Silence. The opening DM with its button is already in the thread — one is enough.");
 
     await sim.taps("lee", "Send it to me", "OPENING_TAP:c1");
     expect(await sim.state("lee")).toBe("AWAITING_FOLLOW");
@@ -581,8 +578,8 @@ describe("10 · one person, several posts, nothing pressed", () => {
     expect(sim.received()).toBe(2); // one opening each — correct, they asked for two things
 
     await sim.types("noa", "hey");
-    expect(sim.received()).toBe(3);
-    sim.note("ONE nudge, not one per funnel. Two would have landed back to back in the same thread.");
+    expect(sim.received()).toBe(2);
+    sim.note("Nothing. Neither funnel answers a typed reply — both openings are already in the thread.");
 
     expect(await sim.state("noa", "c1")).toBe("AWAITING_TAP");
     expect(await sim.state("noa", "c2")).toBe("AWAITING_TAP");
@@ -602,12 +599,10 @@ describe("10 · one person, several posts, nothing pressed", () => {
     for (const t of ["hey", "hello?", "anyone", "??", "still here", "hello"]) await sim.types("owen", t);
 
     const nudges = sim.received() - afterOpenings;
-    sim.note(`6 messages → ${nudges} nudge DMs. Never more than one per message, and it stops.`);
-    expect(nudges).toBeLessThanOrEqual(6);
-    expect(nudges).toBe(2); // two funnels × a cap of one, then silence
+    sim.note(`6 messages → ${nudges} DMs back. However long they talk, nothing repeats.`);
+    expect(nudges).toBe(0);
     await sim.types("owen", "and again");
-    expect(sim.received() - afterOpenings).toBe(2);
-    sim.note("Past the cap on both funnels it goes quiet, however long they keep talking.");
+    expect(sim.received() - afterOpenings).toBe(0);
   });
 
   it("★ pressing the SECOND post's button delivers only that reward", async () => {
@@ -702,8 +697,8 @@ describe("10 · one person, several posts, nothing pressed", () => {
     await sim.comments("tess", "GUIDE", "reel_2");
     const before = sim.received();
     await sim.types("tess", "hey");
-    expect(sim.received()).toBe(before + 1);
-    sim.note("One nudge, for the open funnel only. The finished one stays silent for good.");
+    expect(sim.received()).toBe(before);
+    sim.note("Silence from both — the finished one and the open one alike.");
     expect(await sim.state("tess", "c1")).toBe("DONE");
     expect(await sim.state("tess", "c2")).toBe("AWAITING_TAP");
   });
@@ -750,22 +745,23 @@ describe("11 · the button-label echo (production regressions)", () => {
     await sim.taps("ela", "Send it to me", "OPENING_TAP:c1");
     const afterGate = sim.received();
 
-    // They press "✅ I followed". Its label echo lands first...
+    // They press "✅ I followed". Only its label echo arrives — the postback never does. In
+    // production that left this person parked at the gate for hours with no reward.
     await sim.types("ela", "✅ I followed");
-    expect(sim.received()).toBe(afterGate);
-    expect(await sim.state("ela")).toBe("AWAITING_FOLLOW");
-    sim.note("Echo ignored — no gate re-sent, and crucially updated_at was NOT touched.");
-
-    // ...so the postback that follows it still counts, first time.
-    await sim.taps("ela", "✅ I followed", "FOLLOW_CONFIRM:c1");
     expect(await sim.state("ela")).toBe("DONE");
-    sim.note("✅ Delivered on the FIRST press. Production made them press it twice.");
+    sim.note("✅ The label alone completed it. A missing postback is no longer a dead end.");
+
+    // The postback arriving later changes nothing: entering a state is idempotent.
+    const afterReward = sim.received();
+    await sim.taps("ela", "✅ I followed", "FOLLOW_CONFIRM:c1");
+    expect(sim.received()).toBe(afterReward);
+    sim.note("✅ And the real postback landing afterwards sends no second reward.");
   });
 
-  it("★ @ryanip.life — a real typed reply still gets exactly one nudge", async () => {
+  it("★ @ryanip.life — typed chatter draws nothing at all", async () => {
     const sim = new Sim(
       "SCENARIO 11C — ★ genuinely typed messages, not echoes",
-      "Suppressing echoes must not suppress the nudge for someone actually talking.",
+      "Text that is not a button label is just conversation. We do not answer it with a card.",
     );
     await sim.campaign(campaign());
     await sim.comments("ryan", "LINK");
@@ -773,26 +769,26 @@ describe("11 · the button-label echo (production regressions)", () => {
 
     for (const t of ["Hs", "He", "Haha", "Hello"]) await sim.types("ryan", t);
 
-    expect(sim.received()).toBe(afterOpening + 1);
-    sim.note("4 typed messages → ONE nudge. Production sent two identical cards.");
+    expect(sim.received()).toBe(afterOpening);
+    sim.note("4 typed messages → nothing. Production sent two identical cards back.");
     expect(await sim.state("ryan")).toBe("AWAITING_TAP");
   });
 
-  it("★ an echo is still ignored when it is the only thing that ever arrives", async () => {
+  it("★ the echo alone is enough to advance when no postback ever arrives", async () => {
     const sim = new Sim(
       "SCENARIO 11D — ★ echo with no postback behind it",
-      "Ignoring costs nothing: the button is still in the transcript and a real press still works.",
+      "The label is the fallback proof of a press. Without it, a dropped postback strands somebody.",
     );
     await gated(sim);
     await sim.comments("tam", "LINK");
-    const afterOpening = sim.received();
     await sim.types("tam", "Send it to me");
-    expect(sim.received()).toBe(afterOpening);
-    expect(await sim.state("tam")).toBe("AWAITING_TAP");
-
-    await sim.taps("tam", "Send it to me", "OPENING_TAP:c1");
     expect(await sim.state("tam")).toBe("AWAITING_FOLLOW");
-    sim.note("✅ Their press still works whenever it lands.");
+    sim.note("✅ Recognised as the press it is, and the gate goes out.");
+
+    const afterGate = sim.received();
+    await sim.taps("tam", "Send it to me", "OPENING_TAP:c1");
+    expect(sim.received()).toBe(afterGate);
+    sim.note("✅ The postback arriving late adds nothing — no duplicate gate.");
   });
 });
 
@@ -972,18 +968,18 @@ describe("13 · duplicate presses and stray payloads", () => {
     const afterOpening = sim.received();
 
     await sim.types("liv", sent);
-    expect(sim.received()).toBe(afterOpening);
-    expect((await getConversation(sim.db, "liv", "c1"))?.tap_retries).toBe(0);
-    sim.note("✅ Recognised as the echo of our own button despite being cut mid-word.");
+    expect(sim.received()).toBe(afterOpening + 1); // recognised as the press, so the funnel moves
+    expect(await sim.state("liv")).toBe("DONE");
+    sim.note("✅ Recognised as our own button despite being cut mid-word — matched on what was SENT.");
   });
 
-  it("★ a long replay of old history produces one nudge, not forty", async () => {
+  it("★ a long replay of old history produces no DMs at all", async () => {
     const sim = new Sim("SCENARIO 13E — ★ the poller re-reads a whole backlog", "A cursor reset must not become a DM storm.");
     await sim.campaign(campaign());
     await sim.comments("mo", "LINK");
     const afterOpening = sim.received();
     for (let i = 0; i < 40; i++) await sim.types("mo", `backlog ${i}`);
-    expect(sim.received()).toBe(afterOpening + 1);
-    sim.note("✅ 40 messages, one nudge. The cap and the one-per-message budget both hold.");
+    expect(sim.received()).toBe(afterOpening);
+    sim.note("✅ 40 messages, nothing sent. Nothing to storm with when nothing re-sends.");
   });
 });
