@@ -265,15 +265,11 @@ describe("2 · button tap vs typed reply", () => {
     await sim.campaign(campaign({ check_follow: true }));
     await sim.comments("lee", "LINK");
     await sim.types("lee", "hey");
-    expect(await sim.state("lee")).toBe("AWAITING_TAP");
     await sim.types("lee", "what is this?");
-    expect(await sim.state("lee")).toBe("AWAITING_TAP");
-    expect(sim.received()).toBe(3); // opening + 2 capped re-sends of the button they ignored
-    sim.note("They stay put, and the button they ignored is put back in front of them — twice, then quiet.");
-
     await sim.types("lee", "still typing");
-    expect(sim.received()).toBe(3);
-    sim.note("Third message: nothing. The cap is what keeps this from becoming a DM per message.");
+    expect(await sim.state("lee")).toBe("AWAITING_TAP");
+    expect(sim.received()).toBe(1); // the opening DM, and nothing else, ever
+    sim.note("Silence. The opening DM with its button is already in the thread — one is enough.");
 
     await sim.taps("lee", "Send it to me", "OPENING_TAP:c1");
     expect(await sim.state("lee")).toBe("AWAITING_FOLLOW");
@@ -582,8 +578,8 @@ describe("10 · one person, several posts, nothing pressed", () => {
     expect(sim.received()).toBe(2); // one opening each — correct, they asked for two things
 
     await sim.types("noa", "hey");
-    expect(sim.received()).toBe(3);
-    sim.note("ONE nudge, not one per funnel. Two would have landed back to back in the same thread.");
+    expect(sim.received()).toBe(2);
+    sim.note("Nothing. Neither funnel answers a typed reply — both openings are already in the thread.");
 
     expect(await sim.state("noa", "c1")).toBe("AWAITING_TAP");
     expect(await sim.state("noa", "c2")).toBe("AWAITING_TAP");
@@ -603,12 +599,10 @@ describe("10 · one person, several posts, nothing pressed", () => {
     for (const t of ["hey", "hello?", "anyone", "??", "still here", "hello"]) await sim.types("owen", t);
 
     const nudges = sim.received() - afterOpenings;
-    sim.note(`6 messages → ${nudges} nudge DMs. Never more than one per message, and it stops.`);
-    expect(nudges).toBeLessThanOrEqual(6);
-    expect(nudges).toBe(4); // two funnels × a cap of two, then silence
+    sim.note(`6 messages → ${nudges} DMs back. However long they talk, nothing repeats.`);
+    expect(nudges).toBe(0);
     await sim.types("owen", "and again");
-    expect(sim.received() - afterOpenings).toBe(4);
-    sim.note("Past the cap on both funnels it goes quiet, however long they keep talking.");
+    expect(sim.received() - afterOpenings).toBe(0);
   });
 
   it("★ pressing the SECOND post's button delivers only that reward", async () => {
@@ -703,9 +697,289 @@ describe("10 · one person, several posts, nothing pressed", () => {
     await sim.comments("tess", "GUIDE", "reel_2");
     const before = sim.received();
     await sim.types("tess", "hey");
-    expect(sim.received()).toBe(before + 1);
-    sim.note("One nudge, for the open funnel only. The finished one stays silent for good.");
+    expect(sim.received()).toBe(before);
+    sim.note("Silence from both — the finished one and the open one alike.");
     expect(await sim.state("tess", "c1")).toBe("DONE");
     expect(await sim.state("tess", "c2")).toBe("AWAITING_TAP");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Reproductions of real threads from production, 2026-08-26. Pressing a postback button does not
+// only deliver a postback: Instagram ALSO posts the button's label into the thread as a message
+// from that person. One press, two inbound events. Requiring the payload turned that second event
+// into "they typed something", so the bot answered a press by re-sending the button they had just
+// pressed — and when the echo won the race it also stamped updated_at over the real press, burying
+// it, which is why people ended up pressing "✅ I followed" twice.
+describe("11 · the button-label echo (production regressions)", () => {
+  const gated = (sim: Sim) => sim.campaign(campaign({ check_follow: true }));
+
+  it("★ @mannoeglainfit — one tap must not produce three follow gates", async () => {
+    const sim = new Sim(
+      "SCENARIO 11A — ★ press, then the echo arrives (twice, push + poll)",
+      "Shipped behavior sent the gate 3x. follow_retries hit 2 in production.",
+    );
+    await gated(sim);
+    await sim.comments("manno", "LINK");
+    await sim.taps("manno", "Send it to me", "OPENING_TAP:c1");
+    expect(await sim.state("manno")).toBe("AWAITING_FOLLOW");
+    const afterGate = sim.received();
+
+    // The same press, echoed as plain text — once by the webhook, once by the poller underneath.
+    await sim.types("manno", "Send it to me");
+    await sim.types("manno", "Send it to me");
+
+    expect(sim.received()).toBe(afterGate);
+    sim.note("✅ Both echoes ignored. Exactly ONE follow gate, where production sent three.");
+    const convo = await getConversation(sim.db, "manno", "c1");
+    expect(convo?.follow_retries).toBe(0);
+  });
+
+  it("★ @elamelek.25 — the echo must not bury the real press", async () => {
+    const sim = new Sim(
+      "SCENARIO 11B — ★ the echo arrives BEFORE the postback",
+      "The nastiest form: the echo nudged AND stamped updated_at, so the real press was dropped as stale.",
+    );
+    await gated(sim);
+    await sim.comments("ela", "LINK");
+    await sim.taps("ela", "Send it to me", "OPENING_TAP:c1");
+    const afterGate = sim.received();
+
+    // They press "✅ I followed". Only its label echo arrives — the postback never does. In
+    // production that left this person parked at the gate for hours with no reward.
+    await sim.types("ela", "✅ I followed");
+    expect(await sim.state("ela")).toBe("DONE");
+    sim.note("✅ The label alone completed it. A missing postback is no longer a dead end.");
+
+    // The postback arriving later changes nothing: entering a state is idempotent.
+    const afterReward = sim.received();
+    await sim.taps("ela", "✅ I followed", "FOLLOW_CONFIRM:c1");
+    expect(sim.received()).toBe(afterReward);
+    sim.note("✅ And the real postback landing afterwards sends no second reward.");
+  });
+
+  it("★ @ryanip.life — typed chatter draws nothing at all", async () => {
+    const sim = new Sim(
+      "SCENARIO 11C — ★ genuinely typed messages, not echoes",
+      "Text that is not a button label is just conversation. We do not answer it with a card.",
+    );
+    await sim.campaign(campaign());
+    await sim.comments("ryan", "LINK");
+    const afterOpening = sim.received();
+
+    for (const t of ["Hs", "He", "Haha", "Hello"]) await sim.types("ryan", t);
+
+    expect(sim.received()).toBe(afterOpening);
+    sim.note("4 typed messages → nothing. Production sent two identical cards back.");
+    expect(await sim.state("ryan")).toBe("AWAITING_TAP");
+  });
+
+  it("★ the echo alone is enough to advance when no postback ever arrives", async () => {
+    const sim = new Sim(
+      "SCENARIO 11D — ★ echo with no postback behind it",
+      "The label is the fallback proof of a press. Without it, a dropped postback strands somebody.",
+    );
+    await gated(sim);
+    await sim.comments("tam", "LINK");
+    await sim.types("tam", "Send it to me");
+    expect(await sim.state("tam")).toBe("AWAITING_FOLLOW");
+    sim.note("✅ Recognised as the press it is, and the gate goes out.");
+
+    const afterGate = sim.received();
+    await sim.taps("tam", "Send it to me", "OPENING_TAP:c1");
+    expect(sim.received()).toBe(afterGate);
+    sim.note("✅ The postback arriving late adds nothing — no duplicate gate.");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// The case Ryan asked for directly: comment on one video, ignore its button, comment on a second,
+// then press one of them. Both orderings, and with per-campaign button labels as well as shared
+// ones — the label echo names no campaign, so a differing label used to make one press look like a
+// typed reply to the OTHER funnel.
+describe("12 · two videos, one press", () => {
+  const setup = async (sim: Sim, sameLabels: boolean) => {
+    await sim.campaign(campaign({
+      campaign_id: "c1", media_id: "reel_1", keywords: ["LINK"], check_follow: true,
+    }));
+    await sim.campaign(campaign({
+      campaign_id: "c2", media_id: "reel_2", keywords: ["GUIDE"], check_follow: true,
+      reward: { type: "link", value: "https://example.com/other" },
+      copy: {
+        ...campaign().copy,
+        opening_button: sameLabels ? "Send it to me" : "Get the guide",
+        follow_button: sameLabels ? "✅ I followed" : "✅ Done",
+      },
+    }));
+  };
+
+  /** A press as Instagram really delivers it: the postback, then its label echoed as a message. */
+  const press = async (sim: Sim, who: string, label: string, payload: string) => {
+    await sim.taps(who, label, payload);
+    await sim.types(who, label); // the echo — the bubble they never typed
+  };
+
+  it("★ ignores video 1's button, comments on video 2, presses VIDEO 2", async () => {
+    const sim = new Sim("SCENARIO 12A — ★ presses the second video's button", "Only that funnel may move.");
+    await setup(sim, true);
+    await sim.comments("ada", "LINK", "reel_1");
+    await sim.comments("ada", "GUIDE", "reel_2");
+    const afterOpenings = sim.received();
+
+    await press(sim, "ada", "Send it to me", "OPENING_TAP:c2");
+    expect(sim.received()).toBe(afterOpenings + 1); // the gate, and nothing else
+    expect(await sim.state("ada", "c2")).toBe("AWAITING_FOLLOW");
+    expect(await sim.state("ada", "c1")).toBe("AWAITING_TAP");
+    expect((await getConversation(sim.db, "ada", "c1"))?.tap_retries).toBe(0);
+    sim.note("✅ Video 1 untouched — not advanced, not nudged, no re-send spent on it.");
+
+    await press(sim, "ada", "✅ I followed", "FOLLOW_CONFIRM:c2");
+    expect(await sim.state("ada", "c2")).toBe("DONE");
+    expect(await sim.state("ada", "c1")).toBe("AWAITING_TAP");
+    sim.note("✅ One reward, for the video they actually pressed on. First press, no repeats.");
+  });
+
+  it("★ ignores video 1's button, comments on video 2, then presses VIDEO 1", async () => {
+    const sim = new Sim("SCENARIO 12B — ★ goes back and presses the first video's button", "The older funnel still works.");
+    await setup(sim, true);
+    await sim.comments("ben", "LINK", "reel_1");
+    await sim.comments("ben", "GUIDE", "reel_2");
+    const afterOpenings = sim.received();
+
+    await press(sim, "ben", "Send it to me", "OPENING_TAP:c1");
+    expect(sim.received()).toBe(afterOpenings + 1);
+    expect(await sim.state("ben", "c1")).toBe("AWAITING_FOLLOW");
+    expect(await sim.state("ben", "c2")).toBe("AWAITING_TAP");
+
+    await press(sim, "ben", "✅ I followed", "FOLLOW_CONFIRM:c1");
+    expect(await sim.state("ben", "c1")).toBe("DONE");
+    expect(await sim.state("ben", "c2")).toBe("AWAITING_TAP");
+    sim.note("✅ Scrolling back up to the older button still completes that funnel, and only it.");
+  });
+
+  it("★ same thing when the two videos use DIFFERENT button labels", async () => {
+    const sim = new Sim(
+      "SCENARIO 12C — ★ per-campaign button labels",
+      "The echo names no campaign, so a differing label made one press read as a typed reply to the other funnel.",
+    );
+    await setup(sim, false);
+    await sim.comments("cleo", "LINK", "reel_1");
+    await sim.comments("cleo", "GUIDE", "reel_2");
+    const afterOpenings = sim.received();
+
+    await press(sim, "cleo", "Get the guide", "OPENING_TAP:c2");
+    expect(sim.received()).toBe(afterOpenings + 1);
+    sim.note("✅ One DM. Before this was matched thread-wide, video 1 was nudged by video 2's echo.");
+    expect(await sim.state("cleo", "c1")).toBe("AWAITING_TAP");
+    expect((await getConversation(sim.db, "cleo", "c1"))?.tap_retries).toBe(0);
+
+    await press(sim, "cleo", "✅ Done", "FOLLOW_CONFIRM:c2");
+    expect(await sim.state("cleo", "c2")).toBe("DONE");
+    expect((await getConversation(sim.db, "cleo", "c1"))?.tap_retries).toBe(0);
+    sim.note("✅ Video 1 still has its full nudge budget intact — it was never spoken to.");
+  });
+
+  it("★ and they finish BOTH videos, one press each", async () => {
+    const sim = new Sim("SCENARIO 12D — ★ both funnels completed", "Two presses, two rewards, no crossfire.");
+    await setup(sim, true);
+    await sim.comments("dev", "LINK", "reel_1");
+    await sim.comments("dev", "GUIDE", "reel_2");
+
+    await press(sim, "dev", "Send it to me", "OPENING_TAP:c1");
+    await press(sim, "dev", "✅ I followed", "FOLLOW_CONFIRM:c1");
+    expect(await sim.state("dev", "c1")).toBe("DONE");
+
+    await press(sim, "dev", "Send it to me", "OPENING_TAP:c2");
+    await press(sim, "dev", "✅ I followed", "FOLLOW_CONFIRM:c2");
+    expect(await sim.state("dev", "c2")).toBe("DONE");
+    sim.note("✅ Both rewards, each earned by its own press.");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// A sweep of the cases nothing else covered. Two of these were failing when written: a double-tap
+// produced two follow gates, and a foreign button payload arriving at the email step drew an email
+// re-ask. Both were the same shape — a payload that is not the one we are waiting for still drew a
+// send — which is now impossible: only a TYPED reply can ever produce a nudge.
+describe("13 · duplicate presses and stray payloads", () => {
+  const gated = (sim: Sim) => sim.campaign(campaign({ check_follow: true }));
+
+  it("★ double-tapping the button sends ONE gate, not two", async () => {
+    const sim = new Sim("SCENARIO 13A — ★ they tap twice, impatiently", "People double-tap. Meta also re-delivers.");
+    await gated(sim);
+    await sim.comments("iris", "LINK");
+    const afterOpening = sim.received();
+
+    await sim.taps("iris", "Send it to me", "OPENING_TAP:c1");
+    await sim.taps("iris", "Send it to me", "OPENING_TAP:c1");
+
+    expect(sim.received()).toBe(afterOpening + 1);
+    sim.note("✅ One gate. The second press is silent — the gate is already the newest message.");
+    expect((await getConversation(sim.db, "iris", "c1"))?.follow_retries).toBe(0);
+  });
+
+  it("★ a stray button from another app draws nothing, at every step", async () => {
+    const sim = new Sim("SCENARIO 13B — ★ someone else's postback reaches this account", "Never our event, never our send.");
+    await sim.campaign(campaign({ check_follow: true, ask_email: true }));
+    await sim.comments("jan", "LINK");
+
+    let seen = sim.received();
+    await sim.taps("jan", "Some other app", "SOMEONE_ELSES_BUTTON");
+    expect(sim.received()).toBe(seen); // at AWAITING_TAP
+
+    await sim.taps("jan", "Send it to me", "OPENING_TAP:c1");
+    seen = sim.received();
+    await sim.taps("jan", "Some other app", "SOMEONE_ELSES_BUTTON");
+    expect(sim.received()).toBe(seen); // at AWAITING_FOLLOW
+
+    await sim.taps("jan", "✅ I followed", "FOLLOW_CONFIRM:c1");
+    seen = sim.received();
+    await sim.taps("jan", "Some other app", "SOMEONE_ELSES_BUTTON");
+    expect(sim.received()).toBe(seen); // at AWAITING_EMAIL — the step that used to answer it
+    expect((await getConversation(sim.db, "jan", "c1"))?.email_retries).toBe(0);
+    sim.note("✅ Silent in all three waiting states. The email step used to re-ask off the back of it.");
+  });
+
+  it("★ pressing an old button after the funnel is finished does nothing", async () => {
+    const sim = new Sim("SCENARIO 13C — ★ they scroll up and press again, weeks later", "DONE has to mean done.");
+    await sim.campaign(campaign());
+    await sim.comments("kai", "LINK");
+    await sim.taps("kai", "Send it to me", "OPENING_TAP:c1");
+    expect(await sim.state("kai")).toBe("DONE");
+    const afterReward = sim.received();
+
+    await sim.taps("kai", "Send it to me", "OPENING_TAP:c1");
+    await sim.types("kai", "Send it to me");
+    expect(sim.received()).toBe(afterReward);
+    sim.note("✅ No second reward, no nudge. They are finished.");
+  });
+
+  it("★ an over-long label is trimmed on the way out, and its echo still matches", async () => {
+    const sim = new Sim(
+      "SCENARIO 13D — ★ a label past Instagram's 20-character limit",
+      "The echo comes back as the TRIMMED text, so echo-matching has to compare against what was sent.",
+    );
+    await sim.campaign(campaign({
+      copy: { ...campaign().copy, opening_button: "Tap this button right here to get it" },
+    }));
+    await sim.comments("liv", "LINK");
+    const sent = (sim.client.calls.privateReply[0] as { buttons: { title: string }[] }).buttons[0]!.title;
+    expect(sent).toBe("Tap this button righ");
+    const afterOpening = sim.received();
+
+    await sim.types("liv", sent);
+    expect(sim.received()).toBe(afterOpening + 1); // recognised as the press, so the funnel moves
+    expect(await sim.state("liv")).toBe("DONE");
+    sim.note("✅ Recognised as our own button despite being cut mid-word — matched on what was SENT.");
+  });
+
+  it("★ a long replay of old history produces no DMs at all", async () => {
+    const sim = new Sim("SCENARIO 13E — ★ the poller re-reads a whole backlog", "A cursor reset must not become a DM storm.");
+    await sim.campaign(campaign());
+    await sim.comments("mo", "LINK");
+    const afterOpening = sim.received();
+    for (let i = 0; i < 40; i++) await sim.types("mo", `backlog ${i}`);
+    expect(sim.received()).toBe(afterOpening);
+    sim.note("✅ 40 messages, nothing sent. Nothing to storm with when nothing re-sends.");
   });
 });

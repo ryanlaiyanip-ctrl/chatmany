@@ -9,7 +9,6 @@ import {
   emailReasksExhausted,
   parsePayload,
   taggedPayload,
-  tapReasksExhausted,
 } from "../src/engine/transitions";
 import type { Campaign } from "../src/types";
 
@@ -116,11 +115,3 @@ describe("opening-tap confirmation", () => {
   });
 });
 
-describe("opening re-send cap", () => {
-  it("allows two nudges, then goes quiet", () => {
-    expect(tapReasksExhausted(0)).toBe(false);
-    expect(tapReasksExhausted(1)).toBe(false);
-    expect(tapReasksExhausted(2)).toBe(true);
-    expect(tapReasksExhausted(3)).toBe(true);
-  });
-});

@@ -33,26 +33,20 @@ export function emailReasksExhausted(retries: number): boolean {
 }
 
 /**
- * How many times we will re-send the follow gate to someone who presses the WRONG button.
+ * The opening DM and the follow gate are each sent EXACTLY ONCE per person, ever. There is no
+ * re-send of either, at any cap.
  *
- * The opening button is a button template, so it stays in the transcript forever: scrolling up and
- * pressing it again while sitting at the follow gate is easy, and it used to do nothing at all —
- * they pressed a real button of ours and got silence, with no way to tell they'd pressed the wrong
- * one. Re-sending the gate puts the right button back at the bottom of the thread.
+ * Both are button templates: once sent they stay in the transcript permanently, so a second copy
+ * carries no information the first does not. Every attempt to be helpful by re-sending them ended
+ * up producing duplicates instead, because deciding "this person is stuck and needs a reminder"
+ * means classifying every inbound signal correctly, and the signals are not all classifiable — read
+ * receipts, reactions, re-deliveries and label echoes all arrive looking like a reply. Not sending
+ * removes the need to classify at all, which is why it is a guarantee rather than another cap.
  *
- * Capped for the same reason the email re-ask is: an uncapped DM-per-press loop is the pattern
- * platform spam detection watches for. Reaching the cap only stops the re-sends — the gate itself
- * is still in the transcript, and any typed reply still advances them.
- *
- * This reuses the `follow_retries` column, which already exists in migration 0001 on every
- * deployed database and has had nothing writing to it since verify_follow_count was removed. No
- * new migration is needed.
+ * The email ask is different and still re-asks (see MAX_EMAIL_REASKS): it goes out as quick-reply
+ * chips, and Instagram destroys those the moment the person types or leaves the thread, so there
+ * genuinely may be nothing left on screen for them to act on.
  */
-const MAX_FOLLOW_GATE_REASKS = 2;
-
-export function followGateReasksExhausted(retries: number): boolean {
-  return retries >= MAX_FOLLOW_GATE_REASKS;
-}
 
 /** After a confirmed follow, where next? */
 export function afterFollow(campaign: Campaign): State {
@@ -121,8 +115,9 @@ export function parsePayload(payload: string | undefined): { kind: string | null
  * the follow for anyone who typed anything at the gate, which is precisely what it exists to
  * prevent. Absence of a payload is now treated as what it actually is: not a press.
  */
-export function confirmsFollow(evt: { text?: string; payload?: string }): boolean {
-  return parsePayload(evt.payload).kind === FOLLOW_PAYLOAD;
+export function confirmsFollow(evt: { text?: string; payload?: string }, buttonTitle?: string): boolean {
+  if (parsePayload(evt.payload).kind === FOLLOW_PAYLOAD) return true;
+  return matchesLabel(evt.text, buttonTitle);
 }
 
 /**
@@ -133,29 +128,60 @@ export function confirmsFollow(evt: { text?: string; payload?: string }): boolea
  * counted as a click. The postback payload is the only thing that actually distinguishes a press
  * from a reply, so it is now required.
  */
-export function confirmsTap(evt: { payload?: string }): boolean {
-  return parsePayload(evt.payload).kind === OPENING_PAYLOAD;
+export function confirmsTap(evt: { text?: string; payload?: string }, buttonTitle?: string): boolean {
+  if (parsePayload(evt.payload).kind === OPENING_PAYLOAD) return true;
+  return matchesLabel(evt.text, buttonTitle);
+}
+
+/**
+ * Does this message's text match one of our button labels?
+ *
+ * Pressing a button also posts its label into the thread as a message from that person — the
+ * bubble reading "Send it to me" that they never typed. That echo is a SECOND chance to recognise
+ * a press, and it matters: somebody whose postback never arrived (or arrived and was discarded as
+ * stale) was left stuck at the gate forever with their reward undelivered. Honouring the label
+ * makes that a dead end no longer.
+ *
+ * Compared loosely on purpose. The stored label and the echoed one are not reliably byte-identical
+ * — emoji come back with a presentation selector attached, whitespace gets normalised, casing can
+ * differ — and a near-miss here does not degrade gracefully, it strands somebody.
+ *
+ * Advancing on this is safe because entering a state is idempotent: the postback and its echo both
+ * resolve to the same transition, and the send claims mean the reward goes out once regardless.
+ */
+export function matchesLabel(text: string | undefined, title: string | undefined): boolean {
+  if (!text || !title) return false;
+  return normalizeLabel(text) === normalizeLabel(title);
+}
+
+function normalizeLabel(s: string): string {
+  return s
+    .normalize("NFC")
+    .replace(/[\uFE0E\uFE0F]/g, "") // emoji presentation selectors
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 /**
  * Is this message something we may answer with a re-send?
  *
- * A typed reply (no payload) is a person talking to us, so yes. One of OUR buttons is a deliberate
- * press, so yes. SOMEONE ELSE'S button payload is another integration's event that happens to have
- * reached this account — answering it would mean sending a DM off the back of an event that was
- * never ours, so those are ignored entirely.
+ * ONLY a typed reply — a message carrying no payload at all. A nudge exists for one situation:
+ * somebody talked to us instead of pressing the button, and would otherwise get silence. Any
+ * payload means a button was pressed, and a press is never that situation.
+ *
+ * This deliberately reverses an earlier decision to answer a re-press of the OPENING button at the
+ * follow gate by re-sending the gate. The reasoning then was that a press met with silence feels
+ * broken. Real threads showed the cost: presses arrive more than once — people double-tap, Meta
+ * re-delivers, and the poller re-reads underneath the webhook — so honouring a press we had already
+ * honoured put a second identical card in the thread. Silence on a duplicate press is strictly
+ * better than a duplicate DM, and costs nothing: the button we would have re-sent is already the
+ * most recent thing in the conversation.
+ *
+ * Someone else's button payload is ignored for the separate and stronger reason that it is not our
+ * event at all.
  */
 export function mayReplyTo(evt: { payload?: string }): boolean {
-  const { kind } = parsePayload(evt.payload);
-  return kind === null || kind === OPENING_PAYLOAD || kind === FOLLOW_PAYLOAD;
+  return parsePayload(evt.payload).kind === null;
 }
 
-/**
- * How many times we will re-send the OPENING button to someone who replies in AWAITING_TAP
- * without pressing it. Capped for the same reason as the other two re-send counters.
- */
-const MAX_TAP_REASKS = 2;
-
-export function tapReasksExhausted(retries: number): boolean {
-  return retries >= MAX_TAP_REASKS;
-}

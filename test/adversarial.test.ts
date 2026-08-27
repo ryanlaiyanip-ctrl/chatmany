@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Engine } from "../src/engine/engine";
 import { SendQueue } from "../src/queue/queue";
-import { getConversation, listConversations, upsertCampaign } from "../src/db";
+import { deleteCampaign, eventCountsByType, getConversation, listConversations, upsertCampaign } from "../src/db";
 import { validateCampaign } from "../src/config";
 import { extractEmail, matchesKeyword } from "../src/engine/match";
 import { parsePayload, taggedPayload } from "../src/engine/transitions";
@@ -374,5 +374,48 @@ describe("scale", () => {
     expect(client.calls.text).toHaveLength(1);
     expect((await getConversation(db, "u1", "k7"))?.state).toBe("DONE");
     expect((await getConversation(db, "u1", "k3"))?.state).toBe("AWAITING_TAP");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The same comment delivered twice at once — Meta re-pushing, or the poller re-reading underneath
+// a webhook that has not finished. Both deliveries pass the processed-comments check, because
+// neither has written the row yet when the other looks. 38 people in production carried a doubled
+// comment_matched/opening_sent pair from exactly this.
+describe("one comment, delivered twice at once", () => {
+  it("sends ONE opening DM and logs the funnel entry ONCE", async () => {
+    await upsertCampaign(db, campaign(), true);
+    await Promise.all([engine.handleComment(comment()), engine.handleComment(comment())]);
+
+    expect(client.calls.privateReply).toHaveLength(1); // the send claim held the line
+    const c = await eventCountsByType(db, "c1", 0);
+    expect(c.comment_matched).toBe(1); // and the loser of the race no longer re-logs
+    expect(c.opening_sent).toBe(1);
+  });
+
+  it("two DIFFERENT comments racing still send only one opening", async () => {
+    await upsertCampaign(db, campaign(), true);
+    // Two comment ids means two per-comment claim keys, so a per-comment key let both through and
+    // actually delivered two opening DMs. The key names the person for this reason.
+    await Promise.all([
+      engine.handleComment(comment({ comment_id: "cmA" })),
+      engine.handleComment(comment({ comment_id: "cmB" })),
+    ]);
+    expect(client.calls.privateReply).toHaveLength(1);
+    expect((await eventCountsByType(db, "c1", 0)).opening_sent).toBe(1);
+  });
+
+  it("a deleted-and-recreated campaign still reaches the same person again", async () => {
+    await upsertCampaign(db, campaign(), true);
+    await engine.handleComment(comment());
+    expect(client.calls.privateReply).toHaveLength(1);
+
+    await deleteCampaign(db, "c1");
+    await upsertCampaign(db, campaign(), true);
+    await engine.handleComment(comment({ comment_id: "cm2" }));
+
+    // Deleting the campaign clears its send claims too, so the person-scoped opening key from the
+    // previous life of this campaign id does not silently swallow the new opening.
+    expect(client.calls.privateReply).toHaveLength(2);
   });
 });

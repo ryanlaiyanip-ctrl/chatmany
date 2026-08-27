@@ -148,9 +148,23 @@ export async function handleWebhookEvent(env: Env, req: Request): Promise<Respon
     }
 
     // Messaging events (taps, replies, postbacks).
+    //
+    // `messaging` is NOT a list of messages. Instagram puts every conversation signal in it: read
+    // receipts, reactions, delivery confirmations. Each of those carries the person's sender id and
+    // NO message and NO postback, so normalizing one produced an event with no text and no payload
+    // — indistinguishable from somebody typing, once a press had to prove itself with a payload.
+    //
+    // The result was a DM answering the fact that they OPENED the thread. Both reported threads
+    // show it: a follow gate sent, then a second one three to four seconds later, which is the read
+    // receipt landing as soon as the person looked at the first. Not a reply — an "I saw it".
+    //
+    // So only real inbound content is dispatched. An is_echo message is our own outbound coming
+    // back and must never be treated as theirs either.
     for (const m of entry.messaging ?? []) {
       const igsid = m.sender?.id;
       if (!igsid || igsid === rt.igUserId) continue;
+      if (m.message?.is_echo) continue;
+      if (!m.message && !m.postback) continue; // read / reaction / delivery receipt
       const payload = m.postback?.payload ?? m.message?.quick_reply?.payload;
       const evt: NormalizedMessage = {
         kind: "message",
@@ -203,6 +217,11 @@ interface CommentValue {
 interface MessagingEvent {
   sender?: { id?: string };
   timestamp?: number;
-  message?: { text?: string; quick_reply?: { payload?: string } };
+  message?: { text?: string; is_echo?: boolean; quick_reply?: { payload?: string } };
   postback?: { payload?: string; title?: string };
+  // Present on the signals that are NOT inbound content. Declared so the shape documents why the
+  // loop above filters on `message`/`postback` rather than trusting every entry to be a message.
+  read?: unknown;
+  reaction?: unknown;
+  delivery?: unknown;
 }

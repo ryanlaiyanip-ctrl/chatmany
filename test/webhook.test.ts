@@ -64,10 +64,10 @@ const commentPush = (id = "cmW", from = "uW") => ({
 });
 
 let client: FakeClient;
-async function envFor(mode: string): Promise<Env> {
+async function envFor(mode: string, over: Partial<Campaign> = {}): Promise<Env> {
   const db = makeTestDb();
   client = new FakeClient();
-  await upsertCampaign(db, campaign(), true);
+  await upsertCampaign(db, campaign(over), true);
   runtime = {
     engine: new Engine(db, client as never, new SendQueue({ minIntervalMs: 0, maxRetries: 0, baseBackoffMs: 0 })),
     igUserId: "me",
@@ -242,18 +242,69 @@ describe("a typed DM is not a button press (regression)", () => {
     expect(client.calls.text).toHaveLength(0); // ← the bug: this used to be 1
   });
 
-  it("the button they ignored is put back in front of them, capped at twice", async () => {
+  it("typing repeatedly draws no DM at all — the opening is sent once, ever", async () => {
     const env = await envFor("polling");
     await send(env, commentPush());
+    const openings = client.calls.privateReply.length;
 
     await send(env, typedPush("hey"));
     await send(env, typedPush("hello?"));
     await send(env, typedPush("anyone there"));
 
-    expect(client.calls.button).toHaveLength(2); // two nudges, then quiet — not one DM per message
-    const nudge = client.calls.button[0] as { buttons: { payload: string }[] };
-    expect(nudge.buttons[0]!.payload).toBe("OPENING_TAP:c1");
+    expect(client.calls.button).toHaveLength(0); // no re-sends, at any cap
+    expect(client.calls.privateReply).toHaveLength(openings);
     expect(client.calls.text).toHaveLength(0); // and still no reward
+  });
+
+  // Load-bearing on an email campaign, where a contentless event DOES produce a DM if it reaches
+  // the engine: the email step cannot tell a read receipt from a voice note (both arrive with no
+  // text and no payload), so the distinction has to be made here, where the raw payload still says
+  // which is which. Getting this wrong meant opening the thread got you asked for your email again.
+  it("a read receipt is not a message and draws no DM (production regression)", async () => {
+    const env = await envFor("polling", { ask_email: true });
+    await send(env, commentPush());
+    await send(env, pressPush("OPENING_TAP:c1"));
+    expect(client.calls.quick).toHaveLength(1); // the genuine email ask
+
+    for (const mid of ["m1", "m2", "m3"]) {
+      const res = await send(env, { entry: [{ messaging: [
+        { sender: { id: "uW" }, timestamp: (T + 30) * 1000, read: { mid } }] }] });
+      expect(res.status).toBe(200);
+    }
+    expect(client.calls.quick).toHaveLength(1); // still one — receipts never reached the engine
+  });
+
+  it("a reaction is not a message either", async () => {
+    const env = await envFor("polling", { ask_email: true });
+    await send(env, commentPush());
+    await send(env, pressPush("OPENING_TAP:c1"));
+    const asks = client.calls.quick.length;
+    await send(env, { entry: [{ messaging: [
+      { sender: { id: "uW" }, timestamp: (T + 40) * 1000, reaction: { emoji: "heart" } }] }] });
+    expect(client.calls.quick).toHaveLength(asks);
+  });
+
+  it("but a photo or voice note IS a reply and is still answered", async () => {
+    const env = await envFor("polling", { ask_email: true });
+    await send(env, commentPush());
+    await send(env, pressPush("OPENING_TAP:c1"));
+    expect(client.calls.quick).toHaveLength(1);
+
+    // No text field — the same normalized shape as a receipt, but it carries a `message`.
+    await send(env, { entry: [{ messaging: [
+      { sender: { id: "uW" }, timestamp: (T + 50) * 1000, message: { attachments: [{ type: "image" }] } }] }] });
+    expect(client.calls.quick).toHaveLength(2); // re-asked, not ignored
+  });
+
+  it("our own outbound message echoed back is not treated as theirs", async () => {
+    const env = await envFor("polling");
+    await send(env, commentPush());
+    const before = client.calls.button.length;
+    const raw = JSON.stringify({
+      entry: [{ messaging: [{ sender: { id: "uW" }, timestamp: (T + 30) * 1000, message: { text: "hi", is_echo: true } }] }],
+    });
+    await handleWebhookEvent(env, post(raw, await sign(raw)));
+    expect(client.calls.button).toHaveLength(before);
   });
 
   it("an actual press still delivers, so the funnel is not simply broken", async () => {
