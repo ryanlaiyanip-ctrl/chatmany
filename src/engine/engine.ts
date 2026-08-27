@@ -195,12 +195,24 @@ export class Engine {
     const ok = await this.trySend(
       () => this.client.privateReplyWithButtons(evt.comment_id, campaign.copy.opening, [button]),
       "opening",
-      `opening:${campaign.campaign_id}:${evt.comment_id}`,
+      // Keyed on the PERSON, not the comment. Somebody who comments twice has two comment ids, so a
+      // per-comment key let two deliveries racing each other take one key each and send two opening
+      // DMs — the one duplicate the conversation check cannot catch, because neither had written
+      // the row yet when the other looked. Per person, there is one key and one opening, ever.
+      `opening:${campaign.campaign_id}:${evt.igsid}`,
     );
     if (!ok) return false;
-    await createConversation(this.db, evt.igsid, campaign.campaign_id, evt.username ?? null, "AWAITING_TAP");
-    await logEvent(this.db, campaign.campaign_id, "comment_matched", evt.igsid);
-    await logEvent(this.db, campaign.campaign_id, "opening_sent", evt.igsid);
+    // Only the call that actually inserts the funnel row owns these events. The other side of a
+    // race reaches here too — its send was skipped as already-claimed, which trySend reports as
+    // success — and used to log a second comment_matched and opening_sent for a DM that went out
+    // once. 38 people were double-counted that way before this.
+    const created = await createConversation(
+      this.db, evt.igsid, campaign.campaign_id, evt.username ?? null, "AWAITING_TAP",
+    );
+    if (created) {
+      await logEvent(this.db, campaign.campaign_id, "comment_matched", evt.igsid);
+      await logEvent(this.db, campaign.campaign_id, "opening_sent", evt.igsid);
+    }
     return true;
   }
 

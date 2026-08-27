@@ -107,6 +107,12 @@ export async function deleteCampaign(db: D1Database, campaignId: string): Promis
     db.prepare("DELETE FROM conversations WHERE campaign_id = ?").bind(campaignId),
     db.prepare("DELETE FROM processed_comments WHERE campaign_id = ?").bind(campaignId),
     db.prepare("DELETE FROM events WHERE campaign_id = ?").bind(campaignId),
+    // Send claims too. Every claim key is `<what>:<campaign_id>:<who>`, so this drops exactly this
+    // campaign's. Leaving them behind used to be harmless only because the opening's key named the
+    // COMMENT; now that it names the person, a stale claim would silently block their opening DM
+    // if the campaign were deleted and recreated under the same id — which the builder does every
+    // time you re-use a campaign name. Deleting a campaign clears its dedup history completely.
+    db.prepare("DELETE FROM send_claims WHERE key LIKE ?").bind(`%:${campaignId}:%`),
   ]);
 }
 
@@ -251,15 +257,22 @@ export async function getOpenConversations(
   return rows.results ?? [];
 }
 
+/**
+ * Create a person's funnel entry. Returns TRUE only if this call actually inserted it.
+ *
+ * The return value is what tells a caller whether it is the one that opened this funnel or merely
+ * raced another delivery of the same comment. Without it both logged comment_matched and
+ * opening_sent, so a single opening DM was counted twice on the dashboard.
+ */
 export async function createConversation(
   db: D1Database,
   igsid: string,
   campaignId: string,
   username: string | null,
   state: State,
-): Promise<void> {
+): Promise<boolean> {
   const ts = now();
-  await db
+  const res = await db
     .prepare(
       `INSERT OR IGNORE INTO conversations
          (igsid, campaign_id, state, username, followed, follow_retries, email_retries, tap_retries, updated_at, created_at)
@@ -267,6 +280,7 @@ export async function createConversation(
     )
     .bind(igsid, campaignId, state, username, ts, ts)
     .run();
+  return (res.meta.changes ?? 0) > 0;
 }
 
 export async function updateConversation(
