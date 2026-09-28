@@ -61,13 +61,17 @@ interface LongLivedTokenResponse {
   expires_in: number; // seconds (~60 days)
 }
 
-/** Exchange a short-lived token for a long-lived (~60 day) token. */
+/** Exchange a short-lived token for a long-lived (~60 day) token. The endpoint is unversioned
+ * (no /vXX.X/ prefix — verified live Aug 2026). NOTE: if every Graph call, including this one,
+ * fails with "Unsupported request - method type: get" (code 100), the real cause is a missing
+ * Instagram Tester role — the account must be added under App roles AND accept the invite at
+ * instagram.com → Settings → Apps and websites → Tester invites (README step 1.7). */
 export async function exchangeForLongLivedToken(
   version: string,
   appSecret: string,
   shortLivedToken: string,
 ): Promise<{ accessToken: string; expiresIn: number }> {
-  const url = new URL(`https://graph.instagram.com/${version}/access_token`);
+  const url = new URL("https://graph.instagram.com/access_token");
   url.searchParams.set("grant_type", "ig_exchange_token");
   url.searchParams.set("client_secret", appSecret);
   url.searchParams.set("access_token", shortLivedToken);

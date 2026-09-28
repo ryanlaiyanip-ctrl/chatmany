@@ -291,12 +291,13 @@ export class InstagramClient {
 
 // ---- token endpoints (no access token instance needed) ----
 
-/** Refresh a long-lived token (Section 9). Token must be >24h old and unexpired. */
+/** Refresh a long-lived token (Section 9). Token must be >24h old and unexpired. Unversioned
+ * endpoint, like the exchange (verified live Aug 2026). */
 export async function refreshLongLivedToken(
   version: string,
   accessToken: string,
 ): Promise<{ access_token: string; expires_in: number }> {
-  const url = new URL(`${GRAPH_HOST}/${version}/refresh_access_token`);
+  const url = new URL(`${GRAPH_HOST}/refresh_access_token`);
   url.searchParams.set("grant_type", "ig_refresh_token");
   url.searchParams.set("access_token", accessToken);
   const res = await fetch(url.toString());

@@ -333,3 +333,13 @@ textarea { resize: vertical; min-height: 66px; }
 .login-card p { text-align: center; color: var(--ink-soft); margin: 0 0 20px; }
 .connect-box { text-align: center; padding: 8px 0 4px; }
 .connect-box .ig-avatar { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; margin: 0 auto 10px; display: block; background: var(--line); }
+
+/* ---------- connect gate (automations locked until Instagram is connected) ---------- */
+.gate-wrap { display: grid; place-items: center; min-height: 55vh; padding: 20px; }
+.gate-card { width: 100%; max-width: 420px; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); padding: 34px 30px; text-align: center; }
+.gate-icon { width: 52px; height: 52px; margin: 0 auto 14px; border-radius: 50%; background: var(--line); display: grid; place-items: center; color: var(--ink-soft); }
+.gate-icon svg { width: 24px; height: 24px; }
+.gate-card h2 { margin-bottom: 6px; }
+.gate-card p { color: var(--ink-soft); margin: 0 0 18px; }
+.gate-card .btn { display: inline-block; text-decoration: none; }
+.gate-hint { font-size: 12.5px; margin-top: 14px; margin-bottom: 0 !important; }
